@@ -12,6 +12,9 @@
  * 定义化合策略的标准接口：条件判断 (CanReaction)、正向反应 (Reaction) 与回滚剥离 (ReactionRevert)。
  * 子类通过覆写 BlueprintNativeEvent 实现自定义化合逻辑。
  * 所有 SPI 方法同时接收 GameplayTags 与 Actor/Component 原生 FName 标签，两者独立、互不冲突。
+ *
+ * 作为 UObject 子对象挂载于 USingularisCombineComponent，
+ * 通过 AddReplicatedSubObject 注册至组件级复制列表，bIsActive 属性的变更将同步至所有客户端。
  */
 UCLASS(Abstract, Blueprintable, EditInlineNew, CollapseCategories)
 class SINGULARISCOMBINE_API USingularisCombine : public UObject
@@ -21,10 +24,13 @@ class SINGULARISCOMBINE_API USingularisCombine : public UObject
 public:
 #pragma region Parameter
 
-	/** 当前策略是否处于激活状态（已触发 Reaction 且未被 ReactionRevert） */
+	/**
+	 * 当前策略是否处于激活状态。变更时复制至所有客户端并触发 OnRep_IsActive 回调。
+	 */
 	UPROPERTY(
+		ReplicatedUsing = OnRep_IsActive,
 		EditDefaultsOnly,
-		BlueprintReadOnly,
+		BlueprintReadWrite,
 		Category = "SingularisCombine|引力奇点化合|参数",
 		meta = (DisplayName = "激活")
 	)
@@ -35,6 +41,11 @@ public:
 #pragma region UObject Interface
 
 	virtual UWorld* GetWorld() const override;
+	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+
+	virtual bool IsSupportedForNetworking() const override;
+	virtual int32 GetFunctionCallspace(UFunction* Function, FFrame* Stack) override;
+	virtual bool CallRemoteFunction(UFunction* Function, void* Parms, FOutParmRec* OutParms, FFrame* Stack) override;
 
 #pragma endregion
 
@@ -128,6 +139,14 @@ public:
 		const TArray<FName>& BlackboardNativeTags,
 		float DeltaTime
 	);
+
+	UFUNCTION(
+		BlueprintNativeEvent,
+		BlueprintCallable,
+		Category = "SingularisCombine|引力奇点化合|SPI",
+		meta = (DisplayName = "OnRep_IsActive")
+	)
+	void OnRep_IsActive() const;
 
 #pragma endregion
 };

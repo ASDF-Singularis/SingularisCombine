@@ -115,6 +115,7 @@ public:
 
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 	virtual void TickComponent(
 		float DeltaTime,
 		ELevelTick TickType,
@@ -153,6 +154,7 @@ public:
 	 */
 	UFUNCTION(
 		BlueprintCallable,
+		BlueprintAuthorityOnly,
 		Category = "SingularisCombine|引力奇点化合组件|API",
 		meta = (DisplayName = "SetPipeline")
 	)
@@ -161,6 +163,7 @@ public:
 	/** 清空化合管线：移除所有策略并回滚已激活状态后触发重估。 */
 	UFUNCTION(
 		BlueprintCallable,
+		BlueprintAuthorityOnly,
 		Category = "SingularisCombine|引力奇点化合组件|API",
 		meta = (DisplayName = "ClearPipeline")
 	)
@@ -169,6 +172,7 @@ public:
 	/** 向化合管线末尾追加一条策略条目并触发重估。 */
 	UFUNCTION(
 		BlueprintCallable,
+		BlueprintAuthorityOnly,
 		Category = "SingularisCombine|引力奇点化合组件|API",
 		meta = (DisplayName = "AddCombineEntry")
 	)
@@ -192,6 +196,12 @@ private:
 
 	/** 收集同 Actor 下所有 GameplayTags 及原生 FName 标签 */
 	void CollectAllTags();
+
+	/** 将化合管线中全部有效的 Instanced 化合子对象添加至网络复制列表。仅在服务器端执行。 */
+	void RegisterCombineSubObjects();
+
+	/** 将化合管线中全部已注册的 Instanced 化合子对象从网络复制列表中移除。仅在服务器端执行。 */
+	void UnregisterCombineSubObjects();
 
 	/**
 	 * UObject 构造全局回调

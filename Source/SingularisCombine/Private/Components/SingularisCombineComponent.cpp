@@ -2,13 +2,15 @@
 
 #include <GameplayTagAssetInterface.h>
 #include <Engine/World.h>
+#include <Net/UnrealNetwork.h>
 
 #include "Objects/SingularisCombineBase.h"
 #include "Types/SingularisCombineType.h"
 
 USingularisCombineComponent::USingularisCombineComponent()
 {
-	SetIsReplicatedByDefault(false);
+	SetIsReplicatedByDefault(true);
+	bReplicateUsingRegisteredSubObjectList = true;
 
 	PrimaryComponentTick.bStartWithTickEnabled = true;
 	PrimaryComponentTick.bCanEverTick = true;
@@ -26,11 +28,11 @@ void USingularisCombineComponent::BeginPlay()
 		return;
 	}
 
-	/*// 1) 订阅全局 UObject 构造委托：捕获 OwnerActor 上的组件新增
-	ObjectConstructedHandle = FCoreUObjectDelegates::OnObjectConstructed.AddUObject(
-		this,
-		&USingularisCombineComponent::OnOwnerChildComponentConstructed
-	);*/
+	// 1) 服务器端：将化合管线中的 Instanced 子对象注册至网络复制列表
+	if (GetOwner() && GetOwner()->HasAuthority())
+	{
+		RegisterCombineSubObjects();
+	}
 
 	// 2) 启动周期性评估定时器：兜底检测组件移除与标签变更
 	if (AutoEvaluateInterval > 0.0f)
@@ -43,20 +45,15 @@ void USingularisCombineComponent::BeginPlay()
 		);
 	}
 
-	// 3) 初始评估
+	// 3) 初始评估：收集标签并（服务端）执行管线
 	EvaluatePipeline();
 }
 
 void USingularisCombineComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
-	/*// 1) 移除全局构造委托订阅
-	if (ObjectConstructedHandle.IsValid())
-	{
-		FCoreUObjectDelegates::OnObjectConstructed.Remove(ObjectConstructedHandle);
-		ObjectConstructedHandle.Reset();
-	}*/
+	UnregisterCombineSubObjects();
 
-	// 2) 清理定时器
+	// 1) 清理定时器
 	if (const UWorld* const World = GetWorld())
 	{
 		World->GetTimerManager().ClearTimer(PeriodicEvaluateHandle);
@@ -64,6 +61,13 @@ void USingularisCombineComponent::EndPlay(const EEndPlayReason::Type EndPlayReas
 	}
 
 	Super::EndPlay(EndPlayReason);
+}
+
+void USingularisCombineComponent::GetLifetimeReplicatedProps(
+	TArray<FLifetimeProperty>& OutLifetimeProps
+) const
+{
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 }
 
 void USingularisCombineComponent::TickComponent(
@@ -87,13 +91,13 @@ void USingularisCombineComponent::TickComponent(
 	Context.Target = nullptr;
 	Context.CombineComponent = this;
 
-	// 2) 当评估间隔为 0 时，每帧执行管线评估
-	if (AutoEvaluateInterval <= 0.0f)
+	// 2) 服务端：评估间隔为 0 时每帧执行管线
+	if (OwnerActor->HasAuthority() && AutoEvaluateInterval <= 0.0f)
 	{
 		EvaluatePipeline();
 	}
 
-	// 3) 遍历激活的策略并调用 SustainReaction
+	// 3) 所有端：遍历激活的策略并调用 SustainReaction（驱动瞬态效果）
 	for (const FSingularisCombineEntry& Entry : CombinePipeline.Combines)
 	{
 		USingularisCombine* const Combine = Entry.Combine;
@@ -151,7 +155,7 @@ void USingularisCombineComponent::EvaluatePipeline()
 		return;
 	}
 
-	// 1) 刷新全局黑板（GameplayTags + 原生 FName 标签）；仅在标签集合实际变更时广播
+	// 1) 所有端：刷新全局黑板（GameplayTags + 原生 FName 标签）；仅在标签集合实际变更时广播
 	CollectAllTags();
 
 	const bool bGameplayTagsChanged = BlackboardTags != PreviousBlackboardTags;
@@ -164,14 +168,18 @@ void USingularisCombineComponent::EvaluatePipeline()
 		OnCombineBlackboardUpdatedEvent.Broadcast(BlackboardTags, NativeBlackboardTags);
 	}
 
-	// 2) 构建化合上下文
+	// 2) 服务端权威：构建化合上下文并逐个评估策略管线
+	if (!OwnerActor->HasAuthority())
+	{
+		return;
+	}
+
 	FSingularisCombineContext Context;
 	Context.Instigator = Cast<AActor>(OwnerActor->GetInstigator());
 	Context.Avatar = OwnerActor;
 	Context.Target = OwnerActor;
 	Context.CombineComponent = this;
 
-	// 3) 遍历并执行化合管线中的策略列表
 	for (FSingularisCombineEntry& Entry : CombinePipeline.Combines)
 	{
 		USingularisCombine* const Combine = Entry.Combine;
@@ -243,6 +251,46 @@ void USingularisCombineComponent::CollectAllTags()
 	for (const UActorComponent* Comp : Components)
 	{
 		NativeBlackboardTags.Append(Comp->ComponentTags);
+	}
+}
+
+void USingularisCombineComponent::RegisterCombineSubObjects()
+{
+	// 1) 仅服务器端执行子对象注册
+	if (!GetOwner() || !GetOwner()->HasAuthority())
+	{
+		return;
+	}
+
+	// 2) 遍历化合管线，将有效的 Instanced 化合子对象添加至网络复制列表
+	for (const FSingularisCombineEntry& Entry : CombinePipeline.Combines)
+	{
+		if (!IsValid(Entry.Combine))
+		{
+			continue;
+		}
+
+		AddReplicatedSubObject(Entry.Combine);
+	}
+}
+
+void USingularisCombineComponent::UnregisterCombineSubObjects()
+{
+	// 1) 仅服务器端执行子对象注销
+	if (!GetOwner() || !GetOwner()->HasAuthority())
+	{
+		return;
+	}
+
+	// 2) 遍历化合管线，将已注册的化合子对象从网络复制列表中移除
+	for (const FSingularisCombineEntry& Entry : CombinePipeline.Combines)
+	{
+		if (!IsValid(Entry.Combine))
+		{
+			continue;
+		}
+
+		RemoveReplicatedSubObject(Entry.Combine);
 	}
 }
 
