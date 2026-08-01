@@ -1,29 +1,29 @@
 {
-	"FileVersion": 3,
-	"Version": 1,
-	"VersionName": "0.1.0",
-	"FriendlyName": "SingularisCombine",
-	"Description": "",
-	"Category": "Singularis",
-	"CreatedBy": "TrifingZW",
-	"CreatedByURL": "",
-	"DocsURL": "",
-	"MarketplaceURL": "",
-	"SupportURL": "",
-	"CanContainContent": true,
-	"IsBetaVersion": true,
-	"IsExperimentalVersion": false,
-	"Installed": false,
-	"Modules": [
-		{
-			"Name": "SingularisCombine",
-			"Type": "Runtime",
-			"LoadingPhase": "Default"
-		},
-		{
-			"Name": "SingularisCombineEditor",
-			"Type": "Editor",
-			"LoadingPhase": "Default"
-		}
-	]
+    "FileVersion": 3,
+    "Version": 1,
+    "VersionName": "0.1.0",
+    "FriendlyName": "SingularisCombine",
+    "Description": "Singularis 生态化合系统。提供基于 GameplayTag 驱动的状态黑板与策略管线引擎，支持实体间化合反应的语义感知、规则判定与效果执行，网络复制就绪。",
+    "Category": "Singularis",
+    "CreatedBy": "TrifingZW",
+    "CreatedByURL": "",
+    "DocsURL": "",
+    "MarketplaceURL": "",
+    "SupportURL": "",
+    "CanContainContent": true,
+    "IsBetaVersion": true,
+    "IsExperimentalVersion": false,
+    "Installed": false,
+    "Modules": [
+        {
+            "Name": "SingularisCombine",
+            "Type": "Runtime",
+            "LoadingPhase": "Default"
+        },
+        {
+            "Name": "SingularisCombineEditor",
+            "Type": "Editor",
+            "LoadingPhase": "Default"
+        }
+    ]
 }
