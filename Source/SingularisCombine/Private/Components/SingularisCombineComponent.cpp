@@ -181,21 +181,6 @@ UActorComponent* USingularisCombineComponent::GetDependency(
 	return nullptr;
 }
 
-UActorComponent* USingularisCombineComponent::GetAvatarComponent(
-	const TSubclassOf<UActorComponent> ComponentClass
-) const
-{
-	if (!ComponentClass)
-		return nullptr;
-
-	const AActor* const OwnerActor = GetOwner();
-	if (!OwnerActor)
-		return nullptr;
-
-	// 1) 在 Owner Actor 上即时查找目标组件
-	return OwnerActor->GetComponentByClass(ComponentClass);
-}
-
 bool USingularisCombineComponent::AreDependenciesSatisfied(
 	const USingularisCombine* Strategy,
 	const FSingularisCombineContext& Context

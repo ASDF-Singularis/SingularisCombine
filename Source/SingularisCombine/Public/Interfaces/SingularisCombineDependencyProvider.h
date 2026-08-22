@@ -37,11 +37,4 @@ public:
 		ESingularisCombineDependencyScope Scope,
 		TSubclassOf<UActorComponent> ComponentClass
 	) const = 0;
-
-	/**
-	 * 沿 Avatar（组件 Owner）即时查询目标组件，用于未声明依赖的动态访问
-	 * @param ComponentClass  组件类型
-	 * @return 查找到的组件引用，未找到时返回 nullptr
-	 */
-	virtual UActorComponent* GetAvatarComponent(TSubclassOf<UActorComponent> ComponentClass) const = 0;
 };

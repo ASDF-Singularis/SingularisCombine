@@ -97,19 +97,6 @@ public:
 		TSubclassOf<UActorComponent> ComponentClass
 	) const;
 
-	/**
-	 * 兜底查询：通过注入的依赖查询提供者即时查找 Avatar 上的组件
-	 * 用于未在 ComponentDependencies 中声明的临时/动态查询
-	 * @param ComponentClass  目标组件类型
-	 * @return 查找到的组件引用，未找到时返回 nullptr
-	 */
-	UFUNCTION(
-		BlueprintPure,
-		Category = "SingularisCombine|引力奇点化合|State",
-		meta = (DisplayName = "GetAvatarComponent")
-	)
-	UActorComponent* GetAvatarComponent(TSubclassOf<UActorComponent> ComponentClass) const;
-
 #pragma endregion
 
 #pragma region API

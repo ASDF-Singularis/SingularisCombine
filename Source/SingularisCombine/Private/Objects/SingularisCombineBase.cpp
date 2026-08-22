@@ -110,18 +110,6 @@ UActorComponent* USingularisCombine::GetDependency(
 	return nullptr;
 }
 
-UActorComponent* USingularisCombine::GetAvatarComponent(const TSubclassOf<UActorComponent> ComponentClass) const
-{
-	if (!ComponentClass)
-		return nullptr;
-
-	// 1) 委托注入的依赖查询提供者即时查找 Avatar 组件
-	if (const ISingularisCombineDependencyProvider* const Provider = DependencyProvider.Get())
-		return Provider->GetAvatarComponent(ComponentClass);
-
-	return nullptr;
-}
-
 void USingularisCombine::SetDependencyProvider(ISingularisCombineDependencyProvider* Provider)
 {
 	DependencyProvider = Provider;

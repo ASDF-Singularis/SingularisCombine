@@ -185,13 +185,6 @@ public:
 	) const override;
 
 	/**
-	 * 沿 Owner Actor 即时查询组件（未缓存，供未声明依赖的动态访问兜底）
-	 * @param ComponentClass  组件类型
-	 * @return 查找到的组件引用，未找到时返回 nullptr
-	 */
-	virtual UActorComponent* GetAvatarComponent(TSubclassOf<UActorComponent> ComponentClass) const override;
-
-	/**
 	 * 检查策略声明的依赖是否全部满足
 	 * 空声明返回 true（无条件满足）；任一声明缺失返回 false
 	 * @param Strategy  目标策略
