@@ -95,7 +95,7 @@ void USingularisCombine::SustainReaction_Implementation(
 
 void USingularisCombine::OnRep_IsActive_Implementation() const {}
 
-UActorComponent* USingularisCombine::GetDependency(AActor* Actor, TSubclassOf<UActorComponent> ComponentClass) const
+UActorComponent* USingularisCombine::GetDependency(AActor* Actor, const TSubclassOf<UActorComponent> ComponentClass) const
 {
 	if (!Actor || !ComponentClass)
 		return nullptr;
@@ -107,7 +107,7 @@ UActorComponent* USingularisCombine::GetDependency(AActor* Actor, TSubclassOf<UA
 	return nullptr;
 }
 
-UActorComponent* USingularisCombine::GetAvatarComponent(TSubclassOf<UActorComponent> ComponentClass) const
+UActorComponent* USingularisCombine::GetAvatarComponent(const TSubclassOf<UActorComponent> ComponentClass) const
 {
 	if (!ComponentClass)
 		return nullptr;
