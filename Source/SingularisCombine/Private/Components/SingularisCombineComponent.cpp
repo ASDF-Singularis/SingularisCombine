@@ -2,9 +2,9 @@
 
 #include <GameplayTagAssetInterface.h>
 #include <Engine/World.h>
-#include <Net/UnrealNetwork.h>
 
 #include "Objects/SingularisCombineBase.h"
+#include "Types/SingularisCombineTransientPayload.h"
 #include "Types/SingularisCombineType.h"
 
 USingularisCombineComponent::USingularisCombineComponent()
@@ -24,15 +24,11 @@ void USingularisCombineComponent::BeginPlay()
 
 	const UWorld* const World = GetWorld();
 	if (!World)
-	{
 		return;
-	}
 
 	// 1) 服务器端：将化合管线中的 Instanced 子对象注册至网络复制列表
 	if (GetOwner() && GetOwner()->HasAuthority())
-	{
 		RegisterCombineSubObjects();
-	}
 
 	// 2) 启动周期性评估定时器：兜底检测组件移除与标签变更
 	if (AutoEvaluateInterval > 0.0f)
@@ -80,9 +76,7 @@ void USingularisCombineComponent::TickComponent(
 
 	AActor* const OwnerActor = GetOwner();
 	if (!OwnerActor)
-	{
 		return;
-	}
 
 	// 1) 构建化合上下文
 	FSingularisCombineContext Context;
@@ -93,20 +87,22 @@ void USingularisCombineComponent::TickComponent(
 
 	// 2) 服务端：评估间隔为 0 时每帧执行管线
 	if (OwnerActor->HasAuthority() && AutoEvaluateInterval <= 0.0f)
-	{
 		EvaluatePipeline();
-	}
 
 	// 3) 所有端：遍历激活的策略并调用 SustainReaction（驱动瞬态效果）
 	for (const FSingularisCombineEntry& Entry : CombinePipeline.Combines)
 	{
 		USingularisCombine* const Combine = Entry.Combine;
 		if (!Combine || !Combine->IsActive())
-		{
 			continue;
-		}
 
-		Combine->SustainReaction(Context, BlackboardTags, NativeBlackboardTags, DeltaTime);
+		Combine->SustainReaction(
+			Context,
+			FSingularisCombineTransientPayload{},
+			BlackboardTags,
+			NativeBlackboardTags,
+			DeltaTime
+		);
 	}
 }
 
@@ -125,7 +121,12 @@ void USingularisCombineComponent::SetPipeline(const FSingularisCombinePipeline& 
 		{
 			if (USingularisCombine* Combine = Entry.Combine; Combine && Combine->IsActive())
 			{
-				Combine->ReactionRevert(Context, BlackboardTags, NativeBlackboardTags);
+				Combine->ReactionRevert(
+					Context,
+					FSingularisCombineTransientPayload{},
+					BlackboardTags,
+					NativeBlackboardTags
+				);
 				Combine->SetActive(false);
 			}
 		}
@@ -151,12 +152,17 @@ void USingularisCombineComponent::EvaluatePipeline()
 {
 	AActor* const OwnerActor = GetOwner();
 	if (!OwnerActor)
-	{
 		return;
-	}
 
 	// 1) 所有端：刷新全局黑板（GameplayTags + 原生 FName 标签）；仅在标签集合实际变更时广播
 	CollectAllTags();
+
+	// 2) 所有端：预解析策略声明的组件依赖，刷新策略内部缓存
+	for (const FSingularisCombineEntry& Entry : CombinePipeline.Combines)
+	{
+		if (USingularisCombine* const Combine = Entry.Combine)
+			Combine->ResolveDependencies();
+	}
 
 	const bool bGameplayTagsChanged = BlackboardTags != PreviousBlackboardTags;
 	const bool bNativeTagsChanged = NativeBlackboardTags != PreviousNativeBlackboardTags;
@@ -170,9 +176,7 @@ void USingularisCombineComponent::EvaluatePipeline()
 
 	// 2) 服务端权威：构建化合上下文并逐个评估策略管线
 	if (!OwnerActor->HasAuthority())
-	{
 		return;
-	}
 
 	FSingularisCombineContext Context;
 	Context.Instigator = Cast<AActor>(OwnerActor->GetInstigator());
@@ -180,19 +184,20 @@ void USingularisCombineComponent::EvaluatePipeline()
 	Context.Target = OwnerActor;
 	Context.CombineComponent = this;
 
+	// 3) 读取待处理事件载荷（TriggerEvaluate 写入，周期轮询时为空）
+	const FSingularisCombineTransientPayload Payload = PendingPayload;
+
 	for (FSingularisCombineEntry& Entry : CombinePipeline.Combines)
 	{
 		USingularisCombine* const Combine = Entry.Combine;
 		if (!Combine)
-		{
 			continue;
-		}
 
-		if (Combine->CanReaction(BlackboardTags, NativeBlackboardTags))
+		if (Combine->CanReaction(Context, Payload, BlackboardTags, NativeBlackboardTags))
 		{
 			if (!Combine->IsActive())
 			{
-				Combine->Reaction(Context, BlackboardTags, NativeBlackboardTags);
+				Combine->Reaction(Context, Payload, BlackboardTags, NativeBlackboardTags);
 				Combine->SetActive(true);
 			}
 		}
@@ -200,11 +205,18 @@ void USingularisCombineComponent::EvaluatePipeline()
 		{
 			if (Combine->IsActive())
 			{
-				Combine->ReactionRevert(Context, BlackboardTags, NativeBlackboardTags);
+				Combine->ReactionRevert(Context, Payload, BlackboardTags, NativeBlackboardTags);
 				Combine->SetActive(false);
 			}
 		}
 	}
+}
+
+void USingularisCombineComponent::TriggerEvaluate(const FSingularisCombineTransientPayload& Payload)
+{
+	PendingPayload = Payload;
+	EvaluatePipeline();
+	PendingPayload = FSingularisCombineTransientPayload{};
 }
 
 void USingularisCombineComponent::CollectAllTags()
@@ -214,9 +226,7 @@ void USingularisCombineComponent::CollectAllTags()
 
 	const AActor* const OwnerActor = GetOwner();
 	if (!OwnerActor)
-	{
 		return;
-	}
 
 	// --- GameplayTags 收集 ---
 
@@ -249,26 +259,20 @@ void USingularisCombineComponent::CollectAllTags()
 
 	// 4) 收集同 Actor 下所有组件的原生 FName 标签
 	for (const UActorComponent* Comp : Components)
-	{
 		NativeBlackboardTags.Append(Comp->ComponentTags);
-	}
 }
 
 void USingularisCombineComponent::RegisterCombineSubObjects()
 {
 	// 1) 仅服务器端执行子对象注册
 	if (!GetOwner() || !GetOwner()->HasAuthority())
-	{
 		return;
-	}
 
 	// 2) 遍历化合管线，将有效的 Instanced 化合子对象添加至网络复制列表
 	for (const FSingularisCombineEntry& Entry : CombinePipeline.Combines)
 	{
 		if (!IsValid(Entry.Combine))
-		{
 			continue;
-		}
 
 		AddReplicatedSubObject(Entry.Combine);
 	}
@@ -278,17 +282,13 @@ void USingularisCombineComponent::UnregisterCombineSubObjects()
 {
 	// 1) 仅服务器端执行子对象注销
 	if (!GetOwner() || !GetOwner()->HasAuthority())
-	{
 		return;
-	}
 
 	// 2) 遍历化合管线，将已注册的化合子对象从网络复制列表中移除
 	for (const FSingularisCombineEntry& Entry : CombinePipeline.Combines)
 	{
 		if (!IsValid(Entry.Combine))
-		{
 			continue;
-		}
 
 		RemoveReplicatedSubObject(Entry.Combine);
 	}
@@ -299,22 +299,16 @@ void USingularisCombineComponent::OnOwnerChildComponentConstructed(UObject* Obje
 {
 	// 过滤：仅关注以本组件 OwnerActor 为 Outer 的 UActorComponent 构造事件
 	if (!IsValid(Object) || !Object->IsA<UActorComponent>())
-	{
 		return;
-	}
 
 	const AActor* const OwnerActor = GetOwner();
 	if (!OwnerActor || Object->GetOuter() != OwnerActor)
-	{
 		return;
-	}
 
 	// 合并同帧内的多次构造为单次评估，避免管线被重复触发
 	const UWorld* const World = GetWorld();
 	if (!World)
-	{
 		return;
-	}
 
 	World->GetTimerManager().ClearTimer(PendingEvaluateHandle);
 	World->GetTimerManager().SetTimer(

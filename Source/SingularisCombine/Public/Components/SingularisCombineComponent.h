@@ -6,6 +6,7 @@
 #include <Components/ActorComponent.h>
 
 #include "Types/SingularisCombineComponentType.h"
+#include "Types/SingularisCombineTransientPayload.h"
 #include "SingularisCombineComponent.generated.h"
 
 #pragma region 委托签名
@@ -102,6 +103,10 @@ private:
 	/** 即时评估合并定时器句柄：将同帧内多次构造合并为一次评估 */
 	FTimerHandle PendingEvaluateHandle{};
 
+	/** TriggerEvaluate 写入的待处理事件载荷，EvaluatePipeline 读取后由 TriggerEvaluate 清空 */
+	UPROPERTY(Transient)
+	FSingularisCombineTransientPayload PendingPayload{};
+
 #pragma endregion
 
 public:
@@ -188,6 +193,19 @@ public:
 		meta = (DisplayName = "EvaluatePipeline")
 	)
 	void EvaluatePipeline();
+
+	/**
+	 * 事件驱动评估
+	 * 立即触发一次 EvaluatePipeline，将 Payload 贯穿本次评估所有策略
+	 * @param Payload  事件载荷（事件标识 + 结构化数据），周期轮询触发时为空
+	 */
+	UFUNCTION(
+		BlueprintCallable,
+		BlueprintAuthorityOnly,
+		Category = "SingularisCombine|引力奇点化合组件|API",
+		meta = (DisplayName = "TriggerEvaluate")
+	)
+	void TriggerEvaluate(const FSingularisCombineTransientPayload& Payload);
 
 #pragma endregion
 

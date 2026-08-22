@@ -6,6 +6,8 @@
 
 本插件的终极目标是解决复杂游戏系统中（如魔法组合、环境化学反应、机甲模块组装）实体间的**状态感知与化合反应**问题。它严格遵循 **Zero Tight Coupling (零紧耦合)** 原则，将“业务逻辑表现”与“协同规则判定”彻底剥离。通过引入全局黑板、GameplayTags 语义抽象与策略模式，它能够驱动游戏世界产生无限的 **Emergence (涌现)** 玩法。
 
+插件最初为上层“魔法组合”场景设计，偏向上层具体游戏行为。为适配游戏层（中层）大量使用化合将各独立插件（装备、物品栏、搬运、查询等）链接为完整玩法的场景，引入了三项中层适配能力：**声明式依赖注入**、**瞬态负荷 (Payload)** 与**事件驱动评估**。三者在不破坏上层化合用法的前提下，消除了中层使用时的查询样板、外部入参缺失与评估时机痛点。
+
 ## 一、 核心架构哲学 (Core Architectural Philosophy)
 
 本插件的设计摒弃了传统的“硬编码判断”与“高度耦合通信”，建立在以下三大哲学基石之上：
@@ -31,7 +33,7 @@
 
 ## 二、 核心模块解析 (Core Modules Breakdown)
 
-插件由两个核心数据结构与类组成，它们共同构成了一个状态机求值管线。
+插件由四个核心数据结构与类组成，它们共同构成了一个状态机求值管线。
 
 ### 1. `USingularisCombineComponent` (化合组件 / 执行器)
 
@@ -41,7 +43,9 @@
 | ------------ | ------------------------------------------------------------ |
 | **状态感知** | 遍历 Actor 及挂载组件，通过 `IGameplayTagAssetInterface` 提取并汇总 `BlackboardTags`。 |
 | **事件广播** | 状态更新时触发 `OnCombineBlackboardUpdatedEvent`，允许外部系统（如 UI）被动监听环境变化。 |
-| **管线求值** | 提供 `EvaluatePipeline()` 核心方法，按顺序逐一询问并执行 `CombinePipeline` 中的策略列表。 |
+| **管线求值** | 提供 `EvaluatePipeline()` 核心方法，按顺序逐一询问并执行 `CombinePipeline` 中的策略列表。所有策略独立判定，互不中断。 |
+| **依赖预解析** | 评估前遍历管线策略，调用各策略的 `ResolveDependencies()` 刷新组件依赖缓存，供策略快速访问。 |
+| **事件驱动评估** | 提供 `TriggerEvaluate(Payload)` API，立即触发一次评估并将事件载荷贯穿整条管线，不等周期轮询。 |
 
 ### 2. `USingularisCombine` (化合策略基类)
 
@@ -49,49 +53,87 @@
 
 | **生命周期阶段**       | **接口**            | **核心职责与最佳实践**                                       |
 | ---------------------- | ------------------- | ------------------------------------------------------------ |
-| **阶段 1：条件判定**   | `CanReaction()`     | **Stateless(无状态) 判定**。仅读取 BlackboardTags，返回是否满足化合条件（如 `HasTag(Water) && HasTag(Fire)`）。绝不在此修改任何数据。 |
-| **阶段 2：执行操纵**   | `Reaction()`        | 当条件成立且处于未激活状态时触发。获取 `Context.Avatar` 上的具体表现组件，执行真正的化合业务（变身、生成特效、施加 Buff）。接收 BlackboardTags 以感知当前黑板全貌。 |
-| **阶段 3：回滚剥离**   | `ReactionRevert()`  | **Graceful Invalidation (优雅失效)**。当环境突变导致 `CanReaction` 变为 false 或管线中断时触发。负责清理 `Reaction` 中产生的临时状态、恢复基础表现。接收 BlackboardTags 供回滚决策参考（如判断哪些元素已退场）。 |
-| **阶段 4：持续反应**   | `SustainReaction()` | **每帧调用**。当策略处于激活状态时逐帧触发，接收 BlackboardTags 供读取状态决策，但仅用于编写**不修改木偶状态的瞬态效果**（粒子特效、持续音效、屏幕震动、力场等）。严禁在此修改状态——状态的变更由 Reaction/ReactionRevert 统一管理。 |
+| **阶段 1：条件判定**   | `CanReaction()`     | **Stateless(无状态) 判定**。读取 Context、Payload 与 BlackboardTags，返回是否满足化合条件（如 `HasTag(Water) && HasTag(Fire)`）。绝不在此修改任何数据。 |
+| **阶段 2：执行操纵**   | `Reaction()`        | 当条件成立且处于未激活状态时触发。获取 `Context.Avatar` 上的具体表现组件，执行真正的化合业务（变身、生成特效、施加 Buff）。接收 Payload 以感知本次触发的事件载荷。 |
+| **阶段 3：回滚剥离**   | `ReactionRevert()`  | **Graceful Invalidation (优雅失效)**。当环境突变导致 `CanReaction` 变为 false 或管线中断时触发。负责清理 `Reaction` 中产生的临时状态、恢复基础表现。接收 Payload 供回滚决策参考。 |
+| **阶段 4：持续反应**   | `SustainReaction()` | **每帧调用**。当策略处于激活状态时逐帧触发，接收 Payload 供读取状态决策，但仅用于编写**不修改木偶状态的瞬态效果**（粒子特效、持续音效、屏幕震动、力场等）。严禁在此修改状态——状态的变更由 Reaction/ReactionRevert 统一管理。 |
 
-### 3. `FSingularisCombinePipeline` (化合管线数据)
+四个 SPI 方法均接收 `(Context, Payload, BlackboardGameplayTags, BlackboardNativeTags)` 形参（`SustainReaction` 额外接收 `DeltaTime`）。其中 `Context` 承载稳定的场景身份引用，`Payload` 承载瞬态的事件载荷——两者分离，职责清晰。
 
-用于包装一组有序的化合策略，并提供极其关键的**管线中断 (Suspend)** 控制机制。
+#### 声明式依赖注入 (Declarative Dependency Injection)
+
+策略基类提供声明式依赖注入机制，消除中层使用时反复 `GetComponentByClass` + `IsValid` 的查询样板：
+
+- **`ComponentDependencies`：** 编辑器配置字段，策略声明其所需的依赖组件类型。
+- **`CachedDependencies`：** 运行时缓存，每次评估前由 `ResolveDependencies()` 刷新。
+- **`GetDependency(Class)`：** BlueprintPure 函数，读取预缓存的依赖引用，零查找开销。
+- **`GetAvatarComponent(Class)`：** BlueprintPure 兜底函数，沿 Outer 链即时查询，用于未声明依赖的临时/动态访问。
+
+蓝图体验从 4-5 节点（Get Outer → Cast → Get Owner → Get Component by Class → Is Valid）简化为 2 节点（`GetDependency` + 一次 Cast）。
+
+### 3. `FSingularisCombineTransientPayload` (瞬态负荷)
+
+承载事件驱动评估的瞬态载荷，与 `Context`（稳定身份）分离。参考 CHANT 项目的 `Ability::execute(ctx, payload)` 设计模式。
+
+| **字段** | **类型** | **语义** |
+| -------- | -------- | -------- |
+| **`EventTag`** | `FGameplayTag` | 事件标识，可空。周期轮询触发时为空（语义为“无具体事件，仅标签变更”），`TriggerEvaluate` 触发时携带事件标识。 |
+| **`EventData`** | `FInstancedStruct` | 结构化事件数据，强类型任意 struct，可空。UE 5.8 中 `FInstancedStruct` 内置于 `CoreUObject` 模块，蓝图原生支持（`Make/Get/Set Instanced Struct` 节点）。 |
+
+`Payload` 仅在触发端本次评估有效，不参与网络复制——符合 `Reaction` 服务端权威的现有模型。命名沿用 CHANT 项目的 `TransientPayload` 语义。
+
+### 4. `FSingularisCombinePipeline` (化合管线数据)
+
+用于包装一组有序的化合策略。
 
 - **执行顺序：** 数组内的策略严格按照自上而下的顺序求值。
-- **中断机制 (`bSuspend`)：** 若设为 `true`，一旦管线中某个策略成功触发了 `Reaction`，则后续所有策略的 `Reaction` 都将被阻止（挂起）。
-- **状态机闭环安全：** 中断逻辑使用了极其安全的穿透机制。被挂起的策略即使不能触发 `Reaction`，如果其上一帧处于激活状态，系统依然会强制调用其 `ReactionRevert()`，确保绝不会产生残留的视觉或逻辑死锁。
+- **独立判定：** 所有策略独立判定，互不中断。每个策略根据自身 `CanReaction` 结果独立进入激活或回滚状态，不存在跨策略的挂起或穿透。
 
 ## 三、 数据流向与运行机制 (Data Flow)
 
-当动态环境发生改变（如组件被动态增删），游戏逻辑层（Glue）调用 `EvaluatePipeline()`，系统进入重估循环：
+当动态环境发生改变（如组件被动态增删）或外部事件触发时，系统进入重估循环。评估有三个触发来源：
+
+- **周期轮询定时器**（`AutoEvaluateInterval`）：兜底检测组件移除与标签变更。
+- **组件构造回调**（`OnOwnerChildComponentConstructed`）：检测到 OwnerActor 上新组件构造时，合并同帧多次构造为单次评估。
+- **事件驱动**（`TriggerEvaluate(Payload)`）：立即触发一次评估，将 Payload 贯穿整条管线。
+
+`EvaluatePipeline()` 的执行顺序：
 
 1. **黑板重置 (Blackboard Reset)：** 清空历史标签，重新收集同 Actor 下的所有 Tags。
-2. **管线遍历 (Pipeline Iteration)：** 按序遍历所有的 `USingularisCombine` 策略实体。
-3. **状态推演 (State Transition)：**
+2. **依赖预解析 (Dependency Resolution)：** 遍历管线策略，调用 `ResolveDependencies()` 刷新各策略声明的组件依赖缓存。
+3. **标签变更检测与广播：** 若 GameplayTags 或原生 FName 标签集合实际变更，触发 `OnCombineBlackboardUpdatedEvent`。
+4. **状态推演 (State Transition)：** （服务端权威）构建 Context 与 Payload 局部快照，按序遍历策略：
    - 若 `CanReaction == true` 且当前 `bIsActive == false`：调用 `Reaction()`，标记激活。
    - 若 `CanReaction == false` 且当前 `bIsActive == true`：调用 `ReactionRevert()`，标记失活。
-4. **中断拦截 (Suspend Intercept)：** 若触发中断，后续策略跳过判定，若激活则强行 `ReactionRevert()`。
 5. **持续反应 (Continuous Tick)：** 组件每帧遍历所有激活策略，调用 `SustainReaction()` 驱动瞬态效果（粒子、音效等）。
+
+`TriggerEvaluate` 写入 `PendingPayload` 后同步调用 `EvaluatePipeline`，评估完成后清空 `PendingPayload`。`EvaluatePipeline` 读取 `PendingPayload` 为局部 `const` 快照，保证同帧内策略间读取一致且免疫嵌套触发。
 
 ## 四、 最佳实践规范 (Best Practices)
 
 ### 1. 保证领域组件的幂等性 (Idempotence)
 
-在被 `Reaction` 或 `Revert` 操纵时，底层的业务实体（如魔法组件）必须具备退回 **Base State (基准状态)** 的能力。无论被调用多少次，传入相同参数产生的结果必须绝对一致。
+在被 `Reaction` 或 `Revert` 操纵时，底层的业务实体（如魔法组件）必须具备退回 **Base State (基准状态)** 的能力。无论被调用多少次，传入相同参数产生的结果必须绝对一致。现有“激活才 Reaction、未激活才 Revert”的幂等机制已保证不会因 Payload 重复触发副作用。
 
 ### 2. 在 Reaction 中进行防御性编程 (Defensive Programming)
 
-`CanReaction` 验证的是“逻辑真理”（Tag 存在），而 `Reaction` 面临的是“物理现实”（组件可能刚被销毁）。在 `Reaction` 中调用目标 Actor 的组件时，**必须**进行空指针判定。
+`CanReaction` 验证的是“逻辑真理”（Tag 存在），而 `Reaction` 面临的是“物理现实”（组件可能刚被销毁）。在 `Reaction` 中调用目标 Actor 的组件时，**必须**进行空指针判定。声明式依赖注入的 `GetDependency` 在依赖查找失败时返回 `nullptr`，策略需自行降级处理。
 
 ### 3. 利用 Early Out (提前退出) 保护性能
 
 所有的复杂判定（如位置计算、射线检测）不应放在 `CanReaction` 中。`CanReaction` 应仅作极速的 Tag 比对，从而在最早阶段过滤掉无效策略，实现性能保护。
 
+### 4. Context 与 Payload 分离 (Context vs Payload Separation)
+
+`FSingularisCombineContext` 承载**稳定的场景身份引用**（Instigator / Avatar / Target / CombineComponent），贯穿整个评估周期。`FSingularisCombineTransientPayload` 承载**瞬态的事件载荷**（EventTag / EventData），仅本次评估有效。两者职责严格分离，避免 Context 同时承载稳定身份与瞬态数据违反单一职责。
+
 ## 五、 核心架构关键字字典 (Keywords Glossary)
 
-- **Glue (胶水层)：** 连接去中心化模块的代码层。在本项目中，游戏业务层负责挂载组件并触发 `EvaluatePipeline()`，充当使插件生效的胶水。
+- **Glue (胶水层)：** 连接去中心化模块的代码层。在本项目中，游戏业务层负责挂载组件并触发 `EvaluatePipeline()` 或 `TriggerEvaluate()`，充当使插件生效的胶水。
 - **Emergence (涌现论)：** 复杂系统理论核心。底层简单规则（Tag 与策略）互动，在宏观产生未曾硬编码的复杂玩法生态。
 - **Defensive Programming (防御性编程)：** 在 `Reaction` 阶段对物理执行器进行判空，应对物理实体与抽象标签之间由于时序可能产生的短暂不一致。
 - **State Invalidation (状态失效)：** 当系统的部分组件被动态销毁时，宣告旧黑板作废，强制系统重新计算化合管线，是应对动态环境的核心机制。
 - **Decision vs. Execution (决策与执行分离)：** 架构原则。将“是否应该做（看 Tag）”和“具体怎么做（操纵 Actor）”严格区分为 `CanReaction` 与 `Reaction`。
+- **Declarative Dependency Injection (声明式依赖注入)：** 中层适配机制。策略在编辑器声明所需组件类型，评估前由化合组件预解析并缓存，策略通过 `GetDependency` 零查找开销读取，消除查询样板。
+- **Transient Payload (瞬态负荷)：** 中层适配机制。`FSingularisCombineTransientPayload` 承载事件驱动评估的瞬态载荷（EventTag + EventData），与 Context（稳定身份）分离，仅在本次评估有效。
+- **Event-Driven Evaluation (事件驱动评估)：** 中层适配机制。`TriggerEvaluate(Payload)` 立即触发评估并携带事件载荷，突破周期轮询的被动模型，支持中层主动事件响应。
