@@ -76,7 +76,7 @@ public:
 	UFUNCTION(
 		BlueprintPure,
 		Category = "SingularisCombine|引力奇点化合|State",
-		meta = (DisplayName = "[Name]")
+		meta = (DisplayName = "IsActive")
 	)
 	bool IsActive() const { return bIsActive; }
 
