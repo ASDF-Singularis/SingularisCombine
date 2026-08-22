@@ -2,10 +2,9 @@
 
 #include <CoreMinimal.h>
 #include <GameplayTagContainer.h>
+#include <Templates/Casts.h>
 #include <UObject/Object.h>
 #include <UObject/WeakInterfacePtr.h>
-
-#include <Templates/Casts.h>
 
 #include "Interfaces/SingularisCombineDependencyProvider.h"
 #include "Types/SingularisCombineDependencyList.h"
