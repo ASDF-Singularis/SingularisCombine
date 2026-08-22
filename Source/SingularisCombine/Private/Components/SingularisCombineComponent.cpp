@@ -110,6 +110,147 @@ void USingularisCombineComponent::TickComponent(
 	}
 }
 
+void USingularisCombineComponent::ResolveDependencies(const FSingularisCombineContext& Context)
+{
+	CachedDependencies.Reset();
+
+	// 1) 收集所有策略声明的依赖并集，按作用域分组
+	TMap<ESingularisCombineDependencyScope, TSet<TSubclassOf<UActorComponent>>> AggregatedDeps;
+	for (const FSingularisCombineEntry& Entry : CombinePipeline.Combines)
+	{
+		const USingularisCombine* const Combine = Entry.Combine;
+		if (!Combine)
+			continue;
+
+		for (const auto& Pair : Combine->ComponentDependencies)
+		{
+			TSet<TSubclassOf<UActorComponent>>& TypeSet = AggregatedDeps.FindOrAdd(Pair.Key);
+			for (const TSubclassOf<UActorComponent>& DepClass : Pair.Value.Classes)
+			{
+				if (DepClass)
+					TypeSet.Add(DepClass);
+			}
+		}
+	}
+
+	if (AggregatedDeps.IsEmpty())
+		return;
+
+	// 2) 按作用域映射到 Context 中的 Actor，分别查找并缓存
+	auto ResolveForActor = [this](AActor* Actor, const TSet<TSubclassOf<UActorComponent>>& TypeSet)
+	{
+		if (!Actor || TypeSet.IsEmpty())
+			return;
+
+		TMap<TSubclassOf<UActorComponent>, TWeakObjectPtr<UActorComponent>>& ActorCache = CachedDependencies.FindOrAdd(
+			Actor
+		);
+		for (const TSubclassOf<UActorComponent>& DepClass : TypeSet)
+		{
+			if (UActorComponent* const Found = Actor->GetComponentByClass(DepClass))
+				ActorCache.Add(DepClass, Found);
+		}
+	};
+
+	if (const TSet<TSubclassOf<UActorComponent>>* InstigatorDeps = AggregatedDeps.Find(
+		ESingularisCombineDependencyScope::Instigator
+	))
+		ResolveForActor(Context.Instigator, *InstigatorDeps);
+
+	if (const TSet<TSubclassOf<UActorComponent>>* AvatarDeps = AggregatedDeps.Find(
+		ESingularisCombineDependencyScope::Avatar
+	))
+		ResolveForActor(Context.Avatar, *AvatarDeps);
+
+	if (const TSet<TSubclassOf<UActorComponent>>* TargetDeps = AggregatedDeps.Find(
+		ESingularisCombineDependencyScope::Target
+	))
+		ResolveForActor(Context.Target, *TargetDeps);
+}
+
+UActorComponent* USingularisCombineComponent::GetDependency(
+	AActor* Actor,
+	const TSubclassOf<UActorComponent> ComponentClass
+) const
+{
+	if (!Actor || !ComponentClass)
+		return nullptr;
+
+	// 1) 从缓存中查找 Actor → 组件类型映射
+	if (const TMap<TSubclassOf<UActorComponent>, TWeakObjectPtr<UActorComponent>>* ActorCache = CachedDependencies.Find(
+		Actor
+	))
+	{
+		if (const TWeakObjectPtr<UActorComponent>* const Found = ActorCache->Find(ComponentClass))
+		{
+			if (Found->IsValid())
+				return Found->Get();
+		}
+	}
+
+	return nullptr;
+}
+
+bool USingularisCombineComponent::AreDependenciesSatisfied(
+	const USingularisCombine* Strategy,
+	const FSingularisCombineContext& Context
+) const
+{
+	if (!Strategy)
+		return true;
+
+	// 1) 空声明视为无条件满足
+	if (Strategy->ComponentDependencies.IsEmpty())
+		return true;
+
+	// 2) 逐作用域检查声明类型是否全部命中缓存
+	for (const auto& Pair : Strategy->ComponentDependencies)
+	{
+		const ESingularisCombineDependencyScope Scope = Pair.Key;
+		const TArray<TSubclassOf<UActorComponent>>& DeclaredTypes = Pair.Value.Classes;
+
+		if (DeclaredTypes.IsEmpty())
+			continue;
+
+		const AActor* ScopeActor = nullptr;
+		switch (Scope)
+		{
+		case ESingularisCombineDependencyScope::Instigator:
+			ScopeActor = Context.Instigator;
+			break;
+		case ESingularisCombineDependencyScope::Avatar:
+			ScopeActor = Context.Avatar;
+			break;
+		case ESingularisCombineDependencyScope::Target:
+			ScopeActor = Context.Target;
+			break;
+		default:
+			return false;
+		}
+
+		if (!ScopeActor)
+			return false;
+
+		if (const TMap<TSubclassOf<UActorComponent>, TWeakObjectPtr<UActorComponent>>* ActorCache = CachedDependencies.
+			Find(ScopeActor))
+		{
+			for (const TSubclassOf<UActorComponent>& DepClass : DeclaredTypes)
+			{
+				if (!DepClass)
+					continue;
+
+				const TWeakObjectPtr<UActorComponent>* const Found = ActorCache->Find(DepClass);
+				if (!Found || !Found->IsValid())
+					return false;
+			}
+		}
+		else
+			return false;
+	}
+
+	return true;
+}
+
 void USingularisCombineComponent::SetPipeline(const FSingularisCombinePipeline& InPipeline)
 {
 	// 1) 回滚当前管线中所有已激活策略的状态
@@ -329,145 +470,4 @@ void USingularisCombineComponent::OnOwnerChildComponentConstructed(UObject* Obje
 		0.0f,
 		false
 	);
-}
-
-void USingularisCombineComponent::ResolveDependencies(const FSingularisCombineContext& Context)
-{
-	CachedDependencies.Reset();
-
-	// 1) 收集所有策略声明的依赖并集，按作用域分组
-	TMap<ESingularisCombineDependencyScope, TSet<TSubclassOf<UActorComponent>>> AggregatedDeps;
-	for (const FSingularisCombineEntry& Entry : CombinePipeline.Combines)
-	{
-		const USingularisCombine* const Combine = Entry.Combine;
-		if (!Combine)
-			continue;
-
-		for (const auto& Pair : Combine->ComponentDependencies)
-		{
-			TSet<TSubclassOf<UActorComponent>>& TypeSet = AggregatedDeps.FindOrAdd(Pair.Key);
-			for (const TSubclassOf<UActorComponent>& DepClass : Pair.Value.Classes)
-			{
-				if (DepClass)
-					TypeSet.Add(DepClass);
-			}
-		}
-	}
-
-	if (AggregatedDeps.IsEmpty())
-		return;
-
-	// 2) 按作用域映射到 Context 中的 Actor，分别查找并缓存
-	auto ResolveForActor = [this](AActor* Actor, const TSet<TSubclassOf<UActorComponent>>& TypeSet)
-	{
-		if (!Actor || TypeSet.IsEmpty())
-			return;
-
-		TMap<TSubclassOf<UActorComponent>, TWeakObjectPtr<UActorComponent>>& ActorCache = CachedDependencies.FindOrAdd(
-			Actor
-		);
-		for (const TSubclassOf<UActorComponent>& DepClass : TypeSet)
-		{
-			if (UActorComponent* const Found = Actor->GetComponentByClass(DepClass))
-				ActorCache.Add(DepClass, Found);
-		}
-	};
-
-	if (const TSet<TSubclassOf<UActorComponent>>* InstigatorDeps = AggregatedDeps.Find(
-		ESingularisCombineDependencyScope::Instigator
-	))
-		ResolveForActor(Context.Instigator, *InstigatorDeps);
-
-	if (const TSet<TSubclassOf<UActorComponent>>* AvatarDeps = AggregatedDeps.Find(
-		ESingularisCombineDependencyScope::Avatar
-	))
-		ResolveForActor(Context.Avatar, *AvatarDeps);
-
-	if (const TSet<TSubclassOf<UActorComponent>>* TargetDeps = AggregatedDeps.Find(
-		ESingularisCombineDependencyScope::Target
-	))
-		ResolveForActor(Context.Target, *TargetDeps);
-}
-
-UActorComponent* USingularisCombineComponent::GetDependency(
-	AActor* Actor,
-	TSubclassOf<UActorComponent> ComponentClass
-) const
-{
-	if (!Actor || !ComponentClass)
-		return nullptr;
-
-	// 1) 从缓存中查找 Actor → 组件类型映射
-	if (const TMap<TSubclassOf<UActorComponent>, TWeakObjectPtr<UActorComponent>>* ActorCache = CachedDependencies.Find(
-		Actor
-	))
-	{
-		if (const TWeakObjectPtr<UActorComponent>* const Found = ActorCache->Find(ComponentClass))
-		{
-			if (Found->IsValid())
-				return Found->Get();
-		}
-	}
-
-	return nullptr;
-}
-
-bool USingularisCombineComponent::AreDependenciesSatisfied(
-	const USingularisCombine* Strategy,
-	const FSingularisCombineContext& Context
-) const
-{
-	if (!Strategy)
-		return true;
-
-	// 1) 空声明视为无条件满足
-	if (Strategy->ComponentDependencies.IsEmpty())
-		return true;
-
-	// 2) 逐作用域检查声明类型是否全部命中缓存
-	for (const auto& Pair : Strategy->ComponentDependencies)
-	{
-		const ESingularisCombineDependencyScope Scope = Pair.Key;
-		const TArray<TSubclassOf<UActorComponent>>& DeclaredTypes = Pair.Value.Classes;
-
-		if (DeclaredTypes.IsEmpty())
-			continue;
-
-		const AActor* ScopeActor = nullptr;
-		switch (Scope)
-		{
-		case ESingularisCombineDependencyScope::Instigator:
-			ScopeActor = Context.Instigator;
-			break;
-		case ESingularisCombineDependencyScope::Avatar:
-			ScopeActor = Context.Avatar;
-			break;
-		case ESingularisCombineDependencyScope::Target:
-			ScopeActor = Context.Target;
-			break;
-		default:
-			return false;
-		}
-
-		if (!ScopeActor)
-			return false;
-
-		if (const TMap<TSubclassOf<UActorComponent>, TWeakObjectPtr<UActorComponent>>* ActorCache = CachedDependencies.
-			Find(ScopeActor))
-		{
-			for (const TSubclassOf<UActorComponent>& DepClass : DeclaredTypes)
-			{
-				if (!DepClass)
-					continue;
-
-				const TWeakObjectPtr<UActorComponent>* const Found = ActorCache->Find(DepClass);
-				if (!Found || !Found->IsValid())
-					return false;
-			}
-		}
-		else
-			return false;
-	}
-
-	return true;
 }
