@@ -93,7 +93,7 @@ void USingularisCombineComponent::TickComponent(
 	if (OwnerActor->HasAuthority() && AutoEvaluateInterval <= 0.0f)
 		EvaluatePipeline();
 
-	// 3) 所有端：预解析依赖（保证 SustainReaction 中 GetDependency 可用）
+	// 3) 所有端：预解析依赖（保证 SustainReaction 中 GetDeclaredComponent 可用）
 	ResolveDependencies(Context);
 
 	// 4) 所有端：遍历激活的策略并调用 SustainReaction（驱动瞬态效果）
@@ -125,7 +125,7 @@ void USingularisCombineComponent::ResolveDependencies(const FSingularisCombineCo
 		if (!Combine)
 			continue;
 
-		for (const auto& Pair : Combine->ComponentDependencies)
+		for (const auto& Pair : Combine->DeclaredComponents)
 		{
 			TSet<TSubclassOf<UActorComponent>>& TypeSet = AggregatedDeps.FindOrAdd(Pair.Key);
 			for (const TSubclassOf<UActorComponent>& DepClass : Pair.Value.Classes)
@@ -157,7 +157,7 @@ void USingularisCombineComponent::ResolveDependencies(const FSingularisCombineCo
 	}
 }
 
-UActorComponent* USingularisCombineComponent::GetDependency(
+UActorComponent* USingularisCombineComponent::GetDeclaredComponent(
 	const ESingularisCombineDependencyScope Scope,
 	const TSubclassOf<UActorComponent> ComponentClass
 ) const
@@ -190,11 +190,11 @@ bool USingularisCombineComponent::AreDependenciesSatisfied(
 		return true;
 
 	// 1) 空声明视为无条件满足
-	if (Strategy->ComponentDependencies.IsEmpty())
+	if (Strategy->DeclaredComponents.IsEmpty())
 		return true;
 
 	// 2) 逐作用域检查声明类型是否全部命中缓存
-	for (const auto& Pair : Strategy->ComponentDependencies)
+	for (const auto& Pair : Strategy->DeclaredComponents)
 	{
 		const TArray<TSubclassOf<UActorComponent>>& DeclaredTypes = Pair.Value.Classes;
 		if (DeclaredTypes.IsEmpty())

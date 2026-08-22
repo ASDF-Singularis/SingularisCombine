@@ -45,7 +45,7 @@ public:
 	bool bIsActive = false;
 
 	/**
-	 * 策略声明的组件依赖
+	 * 策略声明式配置的组件
 	 * 按作用域（Instigator/Avatar/Target）结构化声明；评估前由化合组件预解析并缓存。
 	 * 声明未全部满足时，不进入 CanReaction，直接走回滚路径。
 	 * 空声明视为无条件满足。
@@ -54,9 +54,9 @@ public:
 		EditDefaultsOnly,
 		BlueprintReadOnly,
 		Category = "SingularisCombine|引力奇点化合|参数",
-		meta = (DisplayName = "组件依赖")
+		meta = (DisplayName = "声明组件")
 	)
-	TMap<ESingularisCombineDependencyScope, FSingularisCombineDependencyList> ComponentDependencies{};
+	TMap<ESingularisCombineDependencyScope, FSingularisCombineDependencyList> DeclaredComponents{};
 
 #pragma endregion
 
@@ -82,33 +82,33 @@ public:
 	bool IsActive() const { return bIsActive; }
 
 	/**
-	 * 获取预缓存的依赖组件
+	 * 获取声明式配置的组件实例（预缓存）
 	 * 内部委托注入的依赖查询提供者；必须在化合组件的 ResolveDependencies(Context) 之后调用。
 	 * @param Scope           依赖作用域（Instigator / Avatar / Target）
-	 * @param ComponentClass  声明在 ComponentDependencies 中的组件类型
+	 * @param ComponentClass  声明在 DeclaredComponents 中的组件类型
 	 * @return 预缓存的组件引用，未找到或未声明时返回 nullptr
 	 */
 	UFUNCTION(
 		BlueprintPure,
 		Category = "SingularisCombine|引力奇点化合|State",
-		meta = (DisplayName = "GetDependency", DeterminesOutputType = "ComponentClass")
+		meta = (DisplayName = "获取声明组件", DeterminesOutputType = "ComponentClass")
 	)
-	UActorComponent* GetDependency(
+	UActorComponent* GetDeclaredComponent(
 		ESingularisCombineDependencyScope Scope,
 		TSubclassOf<UActorComponent> ComponentClass
 	) const;
 
 	/**
-	 * 获取预缓存的依赖组件（模板便捷版，自动转换返回类型）
-	 * 等价于 Cast<T>(GetDependency(Scope, T::StaticClass()))，供 C++ 策略免去手动转换。
+	 * 获取声明式配置的组件实例（模板便捷版，自动转换返回类型）
+	 * 等价于 Cast<T>(GetDeclaredComponent(Scope, T::StaticClass()))，供 C++ 策略免去手动转换。
 	 * @param Scope  依赖作用域（Instigator / Avatar / Target）
 	 * @return 预缓存的组件引用，未找到或未声明时返回 nullptr
 	 */
 	template <typename T>
-	T* GetDependency(ESingularisCombineDependencyScope Scope) const
+	T* GetDeclaredComponent(ESingularisCombineDependencyScope Scope) const
 	{
 		static_assert(TIsDerivedFrom<T, UActorComponent>::Value, "T 必须是 UActorComponent 的派生类");
-		return Cast<T>(GetDependency(Scope, T::StaticClass()));
+		return Cast<T>(GetDeclaredComponent(Scope, T::StaticClass()));
 	}
 
 #pragma endregion

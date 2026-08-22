@@ -165,21 +165,21 @@ public:
 	const TArray<FName>& GetNativeBlackboardTags() const { return NativeBlackboardTags; }
 
 	/**
-	 * 预解析管线中所有策略声明的组件依赖
-	 * 收集所有策略的 ComponentDependencies 并集，将每个作用域映射到 Context 中的 Actor，
+	 * 预解析管线中所有策略声明式配置的组件
+	 * 收集所有策略的 DeclaredComponents 并集，将每个作用域映射到 Context 中的 Actor，
 	 * 按声明类型查找并缓存到对应作用域槽位。
-	 * 必须在策略评估前调用；策略通过 GetDependency 读取缓存。
+	 * 必须在策略评估前调用；策略通过 GetDeclaredComponent 读取缓存。
 	 * @param Context  化合上下文，提供 Instigator/Avatar/Target 三个 Actor
 	 */
 	void ResolveDependencies(const FSingularisCombineContext& Context);
 
 	/**
-	 * 查询预缓存的依赖组件
+	 * 查询预缓存的声明式组件
 	 * @param Scope           依赖作用域（Instigator / Avatar / Target）
 	 * @param ComponentClass  组件类型
 	 * @return 预缓存的组件引用，未找到时返回 nullptr
 	 */
-	virtual UActorComponent* GetDependency(
+	virtual UActorComponent* GetDeclaredComponent(
 		ESingularisCombineDependencyScope Scope,
 		TSubclassOf<UActorComponent> ComponentClass
 	) const override;

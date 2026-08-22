@@ -95,7 +95,7 @@ void USingularisCombine::SustainReaction_Implementation(
 
 void USingularisCombine::OnRep_IsActive_Implementation() const {}
 
-UActorComponent* USingularisCombine::GetDependency(
+UActorComponent* USingularisCombine::GetDeclaredComponent(
 	const ESingularisCombineDependencyScope Scope,
 	const TSubclassOf<UActorComponent> ComponentClass
 ) const
@@ -105,7 +105,7 @@ UActorComponent* USingularisCombine::GetDependency(
 
 	// 1) 委托注入的依赖查询提供者
 	if (const ISingularisCombineDependencyProvider* const Provider = DependencyProvider.Get())
-		return Provider->GetDependency(Scope, ComponentClass);
+		return Provider->GetDeclaredComponent(Scope, ComponentClass);
 
 	return nullptr;
 }

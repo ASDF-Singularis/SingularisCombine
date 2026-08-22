@@ -28,12 +28,12 @@ class SINGULARISCOMBINE_API ISingularisCombineDependencyProvider
 
 public:
 	/**
-	 * 查询指定作用域下已预缓存的依赖组件
+	 * 查询指定作用域下已预缓存的声明式组件
 	 * @param Scope           依赖作用域（Instigator / Avatar / Target）
-	 * @param ComponentClass  组件类型
+	 * @param ComponentClass  声明的组件类型
 	 * @return 预缓存的组件引用，未找到时返回 nullptr
 	 */
-	virtual UActorComponent* GetDependency(
+	virtual UActorComponent* GetDeclaredComponent(
 		ESingularisCombineDependencyScope Scope,
 		TSubclassOf<UActorComponent> ComponentClass
 	) const = 0;
