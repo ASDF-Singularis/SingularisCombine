@@ -4,10 +4,13 @@
 #include <GameplayTagContainer.h>
 #include <UObject/Object.h>
 
+#include "Types/SingularisCombineDependencyList.h"
+#include "Types/SingularisCombineDependencyScope.h"
 #include "Types/SingularisCombineTransientPayload.h"
 #include "Types/SingularisCombineType.h"
 #include "SingularisCombineBase.generated.h"
 
+class AActor;
 class UActorComponent;
 
 /**
@@ -23,8 +26,6 @@ UCLASS(Abstract, Blueprintable, EditInlineNew, CollapseCategories)
 class SINGULARISCOMBINE_API USingularisCombine : public UObject
 {
 	GENERATED_BODY()
-
-	friend class USingularisCombineComponent;
 
 public:
 #pragma region Parameter
@@ -42,8 +43,10 @@ public:
 	bool bIsActive = false;
 
 	/**
-	 * 策略声明的依赖组件类型
-	 * 评估前由化合组件预解析，缓存到 CachedDependencies 供策略快速访问
+	 * 策略声明的组件依赖
+	 * 按作用域（Instigator/Avatar/Target）结构化声明；评估前由化合组件预解析并缓存。
+	 * 声明未全部满足时，不进入 CanReaction，直接走回滚路径。
+	 * 空声明视为无条件满足。
 	 */
 	UPROPERTY(
 		EditDefaultsOnly,
@@ -51,20 +54,10 @@ public:
 		Category = "SingularisCombine|引力奇点化合|参数",
 		meta = (DisplayName = "组件依赖")
 	)
-	TArray<TSubclassOf<UActorComponent>> ComponentDependencies{};
+	TMap<ESingularisCombineDependencyScope, FSingularisCombineDependencyList> ComponentDependencies{};
 
 #pragma endregion
 
-private:
-#pragma region Internal Variable
-
-	/** 运行时缓存：每次评估前由 ResolveDependencies 刷新 */
-	UPROPERTY(Transient)
-	TMap<TSubclassOf<UActorComponent>, TWeakObjectPtr<UActorComponent>> CachedDependencies{};
-
-#pragma endregion
-
-public:
 #pragma region UObject Interface
 
 	virtual UWorld* GetWorld() const override;
@@ -88,6 +81,8 @@ public:
 
 	/**
 	 * 获取预缓存的依赖组件
+	 * 内部委托化合组件的缓存查询；必须在化合组件的 ResolveDependencies(Context) 之后调用。
+	 * @param Actor           目标 Actor（通常来自 Context.Instigator/Avatar/Target）
 	 * @param ComponentClass  声明在 ComponentDependencies 中的组件类型
 	 * @return 预缓存的组件引用，未找到或未声明时返回 nullptr
 	 */
@@ -96,7 +91,7 @@ public:
 		Category = "SingularisCombine|引力奇点化合|State",
 		meta = (DisplayName = "GetDependency")
 	)
-	UActorComponent* GetDependency(TSubclassOf<UActorComponent> ComponentClass) const;
+	UActorComponent* GetDependency(AActor* Actor, TSubclassOf<UActorComponent> ComponentClass) const;
 
 	/**
 	 * 兜底查询：沿 Outer 链即时查找 Avatar 上的组件
@@ -223,14 +218,6 @@ public:
 		meta = (DisplayName = "OnRep_IsActive")
 	)
 	void OnRep_IsActive() const;
-
-#pragma endregion
-
-private:
-#pragma region Internal Function
-
-	/** 预解析声明的组件依赖，刷新 CachedDependencies 缓存 */
-	void ResolveDependencies();
 
 #pragma endregion
 };

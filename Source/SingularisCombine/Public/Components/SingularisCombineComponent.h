@@ -9,6 +9,9 @@
 #include "Types/SingularisCombineTransientPayload.h"
 #include "SingularisCombineComponent.generated.h"
 
+class USingularisCombine;
+class UActorComponent;
+
 #pragma region 委托签名
 
 /** 黑板更新的动态多播委托：同时携带 GameplayTags 与 Actor/Component 原生 FName 标签 */
@@ -107,6 +110,13 @@ private:
 	UPROPERTY(Transient)
 	FSingularisCombineTransientPayload PendingPayload{};
 
+	/**
+	 * 依赖组件缓存：按 Actor 分组，每个 Actor 内按组件类型缓存
+	 * 由 ResolveDependencies(Context) 每次评估前刷新
+	 */
+	TMap<TWeakObjectPtr<AActor>, TMap<TSubclassOf<UActorComponent>, TWeakObjectPtr<UActorComponent>>> CachedDependencies
+		{};
+
 #pragma endregion
 
 public:
@@ -148,6 +158,31 @@ public:
 		meta = (DisplayName = "GetNativeBlackboardTags")
 	)
 	const TArray<FName>& GetNativeBlackboardTags() const { return NativeBlackboardTags; }
+
+	/**
+	 * 预解析管线中所有策略声明的组件依赖
+	 * 收集所有策略的 ComponentDependencies 并集，对 Context 中三个 Actor 分别按声明类型查找并缓存。
+	 * 必须在策略评估前调用；策略通过 GetDependency 读取缓存。
+	 * @param Context  化合上下文，提供 Instigator/Avatar/Target 三个 Actor
+	 */
+	void ResolveDependencies(const FSingularisCombineContext& Context);
+
+	/**
+	 * 查询预缓存的依赖组件
+	 * @param Actor           目标 Actor
+	 * @param ComponentClass  组件类型
+	 * @return 预缓存的组件引用，未找到时返回 nullptr
+	 */
+	UActorComponent* GetDependency(AActor* Actor, TSubclassOf<UActorComponent> ComponentClass) const;
+
+	/**
+	 * 检查策略声明的依赖是否全部满足
+	 * 空声明返回 true（无条件满足）；任一声明缺失返回 false
+	 * @param Strategy  目标策略
+	 * @param Context   化合上下文，用于将作用域映射到 Actor
+	 * @return 声明依赖是否全部命中缓存
+	 */
+	bool AreDependenciesSatisfied(const USingularisCombine* Strategy, const FSingularisCombineContext& Context) const;
 
 #pragma endregion
 

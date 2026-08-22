@@ -95,43 +95,14 @@ void USingularisCombine::SustainReaction_Implementation(
 
 void USingularisCombine::OnRep_IsActive_Implementation() const {}
 
-void USingularisCombine::ResolveDependencies()
+UActorComponent* USingularisCombine::GetDependency(AActor* Actor, TSubclassOf<UActorComponent> ComponentClass) const
 {
-	CachedDependencies.Reset();
-
-	if (ComponentDependencies.IsEmpty())
-		return;
-
-	// 1) 沿 Outer 链查找化合组件 → OwnerActor
-	USingularisCombineComponent* const CombineComponent = Cast<USingularisCombineComponent>(GetOuter());
-	if (!CombineComponent)
-		return;
-
-	AActor* const OwnerActor = CombineComponent->GetOwner();
-	if (!OwnerActor)
-		return;
-
-	// 2) 遍历声明的依赖类型，在 OwnerActor 上查找并缓存
-	for (const TSubclassOf<UActorComponent>& DepClass : ComponentDependencies)
-	{
-		if (!DepClass)
-			continue;
-
-		UActorComponent* const Found = OwnerActor->GetComponentByClass(DepClass);
-		if (Found)
-			CachedDependencies.Add(DepClass, Found);
-	}
-}
-
-UActorComponent* USingularisCombine::GetDependency(TSubclassOf<UActorComponent> ComponentClass) const
-{
-	if (!ComponentClass)
+	if (!Actor || !ComponentClass)
 		return nullptr;
 
-	// 1) 从预解析缓存中读取
-	const TWeakObjectPtr<UActorComponent>* const Found = CachedDependencies.Find(ComponentClass);
-	if (Found && Found->IsValid())
-		return Found->Get();
+	// 1) 委托化合组件的缓存查询
+	if (const USingularisCombineComponent* const CombineComponent = Cast<USingularisCombineComponent>(GetOuter()))
+		return CombineComponent->GetDependency(Actor, ComponentClass);
 
 	return nullptr;
 }

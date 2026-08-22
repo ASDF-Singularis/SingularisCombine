@@ -4,8 +4,9 @@
 #include <Engine/World.h>
 
 #include "Objects/SingularisCombineBase.h"
+#include "Types/SingularisCombineComponentType.h"
+#include "Types/SingularisCombineDependencyScope.h"
 #include "Types/SingularisCombineTransientPayload.h"
-#include "Types/SingularisCombineType.h"
 
 USingularisCombineComponent::USingularisCombineComponent()
 {
@@ -89,7 +90,10 @@ void USingularisCombineComponent::TickComponent(
 	if (OwnerActor->HasAuthority() && AutoEvaluateInterval <= 0.0f)
 		EvaluatePipeline();
 
-	// 3) 所有端：遍历激活的策略并调用 SustainReaction（驱动瞬态效果）
+	// 3) 所有端：预解析依赖（保证 SustainReaction 中 GetDependency 可用）
+	ResolveDependencies(Context);
+
+	// 4) 所有端：遍历激活的策略并调用 SustainReaction（驱动瞬态效果）
 	for (const FSingularisCombineEntry& Entry : CombinePipeline.Combines)
 	{
 		USingularisCombine* const Combine = Entry.Combine;
@@ -157,13 +161,6 @@ void USingularisCombineComponent::EvaluatePipeline()
 	// 1) 所有端：刷新全局黑板（GameplayTags + 原生 FName 标签）；仅在标签集合实际变更时广播
 	CollectAllTags();
 
-	// 2) 所有端：预解析策略声明的组件依赖，刷新策略内部缓存
-	for (const FSingularisCombineEntry& Entry : CombinePipeline.Combines)
-	{
-		if (USingularisCombine* const Combine = Entry.Combine)
-			Combine->ResolveDependencies();
-	}
-
 	const bool bGameplayTagsChanged = BlackboardTags != PreviousBlackboardTags;
 	const bool bNativeTagsChanged = NativeBlackboardTags != PreviousNativeBlackboardTags;
 
@@ -187,12 +184,27 @@ void USingularisCombineComponent::EvaluatePipeline()
 	// 3) 读取待处理事件载荷（TriggerEvaluate 写入，周期轮询时为空）
 	const FSingularisCombineTransientPayload Payload = PendingPayload;
 
+	// 4) 预解析管线所有策略声明的组件依赖（按 Context 的三个 Actor 分别缓存）
+	ResolveDependencies(Context);
+
 	for (FSingularisCombineEntry& Entry : CombinePipeline.Combines)
 	{
 		USingularisCombine* const Combine = Entry.Combine;
 		if (!Combine)
 			continue;
 
+		// 前置预检：声明依赖未全部满足 → 不进入 CanReaction，直接回滚
+		if (!AreDependenciesSatisfied(Combine, Context))
+		{
+			if (Combine->IsActive())
+			{
+				Combine->ReactionRevert(Context, Payload, BlackboardTags, NativeBlackboardTags);
+				Combine->SetActive(false);
+			}
+			continue;
+		}
+
+		// 依赖已就绪：CanReaction 可假定声明依赖存在
 		if (Combine->CanReaction(Context, Payload, BlackboardTags, NativeBlackboardTags))
 		{
 			if (!Combine->IsActive())
@@ -317,4 +329,145 @@ void USingularisCombineComponent::OnOwnerChildComponentConstructed(UObject* Obje
 		0.0f,
 		false
 	);
+}
+
+void USingularisCombineComponent::ResolveDependencies(const FSingularisCombineContext& Context)
+{
+	CachedDependencies.Reset();
+
+	// 1) 收集所有策略声明的依赖并集，按作用域分组
+	TMap<ESingularisCombineDependencyScope, TSet<TSubclassOf<UActorComponent>>> AggregatedDeps;
+	for (const FSingularisCombineEntry& Entry : CombinePipeline.Combines)
+	{
+		const USingularisCombine* const Combine = Entry.Combine;
+		if (!Combine)
+			continue;
+
+		for (const auto& Pair : Combine->ComponentDependencies)
+		{
+			TSet<TSubclassOf<UActorComponent>>& TypeSet = AggregatedDeps.FindOrAdd(Pair.Key);
+			for (const TSubclassOf<UActorComponent>& DepClass : Pair.Value.Classes)
+			{
+				if (DepClass)
+					TypeSet.Add(DepClass);
+			}
+		}
+	}
+
+	if (AggregatedDeps.IsEmpty())
+		return;
+
+	// 2) 按作用域映射到 Context 中的 Actor，分别查找并缓存
+	auto ResolveForActor = [this](AActor* Actor, const TSet<TSubclassOf<UActorComponent>>& TypeSet)
+	{
+		if (!Actor || TypeSet.IsEmpty())
+			return;
+
+		TMap<TSubclassOf<UActorComponent>, TWeakObjectPtr<UActorComponent>>& ActorCache = CachedDependencies.FindOrAdd(
+			Actor
+		);
+		for (const TSubclassOf<UActorComponent>& DepClass : TypeSet)
+		{
+			if (UActorComponent* const Found = Actor->GetComponentByClass(DepClass))
+				ActorCache.Add(DepClass, Found);
+		}
+	};
+
+	if (const TSet<TSubclassOf<UActorComponent>>* InstigatorDeps = AggregatedDeps.Find(
+		ESingularisCombineDependencyScope::Instigator
+	))
+		ResolveForActor(Context.Instigator, *InstigatorDeps);
+
+	if (const TSet<TSubclassOf<UActorComponent>>* AvatarDeps = AggregatedDeps.Find(
+		ESingularisCombineDependencyScope::Avatar
+	))
+		ResolveForActor(Context.Avatar, *AvatarDeps);
+
+	if (const TSet<TSubclassOf<UActorComponent>>* TargetDeps = AggregatedDeps.Find(
+		ESingularisCombineDependencyScope::Target
+	))
+		ResolveForActor(Context.Target, *TargetDeps);
+}
+
+UActorComponent* USingularisCombineComponent::GetDependency(
+	AActor* Actor,
+	TSubclassOf<UActorComponent> ComponentClass
+) const
+{
+	if (!Actor || !ComponentClass)
+		return nullptr;
+
+	// 1) 从缓存中查找 Actor → 组件类型映射
+	if (const TMap<TSubclassOf<UActorComponent>, TWeakObjectPtr<UActorComponent>>* ActorCache = CachedDependencies.Find(
+		Actor
+	))
+	{
+		if (const TWeakObjectPtr<UActorComponent>* const Found = ActorCache->Find(ComponentClass))
+		{
+			if (Found->IsValid())
+				return Found->Get();
+		}
+	}
+
+	return nullptr;
+}
+
+bool USingularisCombineComponent::AreDependenciesSatisfied(
+	const USingularisCombine* Strategy,
+	const FSingularisCombineContext& Context
+) const
+{
+	if (!Strategy)
+		return true;
+
+	// 1) 空声明视为无条件满足
+	if (Strategy->ComponentDependencies.IsEmpty())
+		return true;
+
+	// 2) 逐作用域检查声明类型是否全部命中缓存
+	for (const auto& Pair : Strategy->ComponentDependencies)
+	{
+		const ESingularisCombineDependencyScope Scope = Pair.Key;
+		const TArray<TSubclassOf<UActorComponent>>& DeclaredTypes = Pair.Value.Classes;
+
+		if (DeclaredTypes.IsEmpty())
+			continue;
+
+		const AActor* ScopeActor = nullptr;
+		switch (Scope)
+		{
+		case ESingularisCombineDependencyScope::Instigator:
+			ScopeActor = Context.Instigator;
+			break;
+		case ESingularisCombineDependencyScope::Avatar:
+			ScopeActor = Context.Avatar;
+			break;
+		case ESingularisCombineDependencyScope::Target:
+			ScopeActor = Context.Target;
+			break;
+		default:
+			return false;
+		}
+
+		if (!ScopeActor)
+			return false;
+
+		if (const TMap<TSubclassOf<UActorComponent>, TWeakObjectPtr<UActorComponent>>* ActorCache = CachedDependencies.
+			Find(ScopeActor))
+		{
+			for (const TSubclassOf<UActorComponent>& DepClass : DeclaredTypes)
+			{
+				if (!DepClass)
+					continue;
+
+				const TWeakObjectPtr<UActorComponent>* const Found = ActorCache->Find(DepClass);
+				if (!Found || !Found->IsValid())
+					return false;
+			}
+		}
+		else
+			return false;
+	}
+
+	return true;
 }

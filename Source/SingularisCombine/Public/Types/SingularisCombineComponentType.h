@@ -39,5 +39,5 @@ struct SINGULARISCOMBINE_API FSingularisCombinePipeline
 
 	/** 化合策略数组：顺序即为评估优先级 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta = (TitleProperty = "CombineName"))
-	TArray<FSingularisCombineEntry> Combines;
+	TArray<FSingularisCombineEntry> Combines{};
 };
