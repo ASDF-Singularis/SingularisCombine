@@ -31,7 +31,10 @@ void USingularisCombineComponent::BeginPlay()
 	if (GetOwner() && GetOwner()->HasAuthority())
 		RegisterCombineSubObjects();
 
-	// 2) 启动周期性评估定时器：兜底检测组件移除与标签变更
+	// 2) 将本组件注入为管线策略的依赖查询提供者
+	BindDependencyProvider();
+
+	// 3) 启动周期性评估定时器：兜底检测组件移除与标签变更
 	if (AutoEvaluateInterval > 0.0f)
 	{
 		World->GetTimerManager().SetTimer(
@@ -42,7 +45,7 @@ void USingularisCombineComponent::BeginPlay()
 		);
 	}
 
-	// 3) 初始评估：收集标签并（服务端）执行管线
+	// 4) 初始评估：收集标签并（服务端）执行管线
 	EvaluatePipeline();
 }
 
@@ -136,52 +139,39 @@ void USingularisCombineComponent::ResolveDependencies(const FSingularisCombineCo
 	if (AggregatedDeps.IsEmpty())
 		return;
 
-	// 2) 按作用域映射到 Context 中的 Actor，分别查找并缓存
-	auto ResolveForActor = [this](AActor* Actor, const TSet<TSubclassOf<UActorComponent>>& TypeSet)
+	// 2) 将每个作用域映射到 Context 中的 Actor，查找并缓存到对应作用域槽位
+	for (const auto& Pair : AggregatedDeps)
 	{
-		if (!Actor || TypeSet.IsEmpty())
-			return;
+		AActor* const ScopeActor = GetContextActor(Context, Pair.Key);
+		if (!ScopeActor || Pair.Value.IsEmpty())
+			continue;
 
-		TMap<TSubclassOf<UActorComponent>, TWeakObjectPtr<UActorComponent>>& ActorCache = CachedDependencies.FindOrAdd(
-			Actor
+		TMap<TSubclassOf<UActorComponent>, TWeakObjectPtr<UActorComponent>>& ScopeCache = CachedDependencies.FindOrAdd(
+			Pair.Key
 		);
-		for (const TSubclassOf<UActorComponent>& DepClass : TypeSet)
+		for (const TSubclassOf<UActorComponent>& DepClass : Pair.Value)
 		{
-			if (UActorComponent* const Found = Actor->GetComponentByClass(DepClass))
-				ActorCache.Add(DepClass, Found);
+			if (UActorComponent* const Found = ScopeActor->GetComponentByClass(DepClass))
+				ScopeCache.Add(DepClass, Found);
 		}
-	};
-
-	if (const TSet<TSubclassOf<UActorComponent>>* InstigatorDeps = AggregatedDeps.Find(
-		ESingularisCombineDependencyScope::Instigator
-	))
-		ResolveForActor(Context.Instigator, *InstigatorDeps);
-
-	if (const TSet<TSubclassOf<UActorComponent>>* AvatarDeps = AggregatedDeps.Find(
-		ESingularisCombineDependencyScope::Avatar
-	))
-		ResolveForActor(Context.Avatar, *AvatarDeps);
-
-	if (const TSet<TSubclassOf<UActorComponent>>* TargetDeps = AggregatedDeps.Find(
-		ESingularisCombineDependencyScope::Target
-	))
-		ResolveForActor(Context.Target, *TargetDeps);
+	}
 }
 
 UActorComponent* USingularisCombineComponent::GetDependency(
-	AActor* Actor,
+	const ESingularisCombineDependencyScope Scope,
 	const TSubclassOf<UActorComponent> ComponentClass
 ) const
 {
-	if (!Actor || !ComponentClass)
+	if (!ComponentClass)
 		return nullptr;
 
-	// 1) 从缓存中查找 Actor → 组件类型映射
-	if (const TMap<TSubclassOf<UActorComponent>, TWeakObjectPtr<UActorComponent>>* ActorCache = CachedDependencies.Find(
-		Actor
-	))
+	// 1) 从缓存中查找作用域 → 组件类型映射
+	if (const TMap<TSubclassOf<UActorComponent>, TWeakObjectPtr<UActorComponent>>* const ScopeCache = CachedDependencies
+		.Find(
+			Scope
+		))
 	{
-		if (const TWeakObjectPtr<UActorComponent>* const Found = ActorCache->Find(ComponentClass))
+		if (const TWeakObjectPtr<UActorComponent>* const Found = ScopeCache->Find(ComponentClass))
 		{
 			if (Found->IsValid())
 				return Found->Get();
@@ -189,6 +179,21 @@ UActorComponent* USingularisCombineComponent::GetDependency(
 	}
 
 	return nullptr;
+}
+
+UActorComponent* USingularisCombineComponent::GetAvatarComponent(
+	const TSubclassOf<UActorComponent> ComponentClass
+) const
+{
+	if (!ComponentClass)
+		return nullptr;
+
+	const AActor* const OwnerActor = GetOwner();
+	if (!OwnerActor)
+		return nullptr;
+
+	// 1) 在 Owner Actor 上即时查找目标组件
+	return OwnerActor->GetComponentByClass(ComponentClass);
 }
 
 bool USingularisCombineComponent::AreDependenciesSatisfied(
@@ -206,46 +211,31 @@ bool USingularisCombineComponent::AreDependenciesSatisfied(
 	// 2) 逐作用域检查声明类型是否全部命中缓存
 	for (const auto& Pair : Strategy->ComponentDependencies)
 	{
-		const ESingularisCombineDependencyScope Scope = Pair.Key;
 		const TArray<TSubclassOf<UActorComponent>>& DeclaredTypes = Pair.Value.Classes;
-
 		if (DeclaredTypes.IsEmpty())
 			continue;
 
-		const AActor* ScopeActor = nullptr;
-		switch (Scope)
+		// 3) 作用域映射的 Actor 缺失 → 声明无法满足
+		if (!GetContextActor(Context, Pair.Key))
+			return false;
+
+		// 4) 作用域缓存槽位或任一声明类型缺失 → 不满足
+		const TMap<TSubclassOf<UActorComponent>, TWeakObjectPtr<UActorComponent>>* const ScopeCache = CachedDependencies
+			.Find(
+				Pair.Key
+			);
+		if (!ScopeCache)
+			return false;
+
+		for (const TSubclassOf<UActorComponent>& DepClass : DeclaredTypes)
 		{
-		case ESingularisCombineDependencyScope::Instigator:
-			ScopeActor = Context.Instigator;
-			break;
-		case ESingularisCombineDependencyScope::Avatar:
-			ScopeActor = Context.Avatar;
-			break;
-		case ESingularisCombineDependencyScope::Target:
-			ScopeActor = Context.Target;
-			break;
-		default:
-			return false;
+			if (!DepClass)
+				continue;
+
+			const TWeakObjectPtr<UActorComponent>* const Found = ScopeCache->Find(DepClass);
+			if (!Found || !Found->IsValid())
+				return false;
 		}
-
-		if (!ScopeActor)
-			return false;
-
-		if (const TMap<TSubclassOf<UActorComponent>, TWeakObjectPtr<UActorComponent>>* ActorCache = CachedDependencies.
-			Find(ScopeActor))
-		{
-			for (const TSubclassOf<UActorComponent>& DepClass : DeclaredTypes)
-			{
-				if (!DepClass)
-					continue;
-
-				const TWeakObjectPtr<UActorComponent>* const Found = ActorCache->Find(DepClass);
-				if (!Found || !Found->IsValid())
-					return false;
-			}
-		}
-		else
-			return false;
 	}
 
 	return true;
@@ -279,6 +269,7 @@ void USingularisCombineComponent::SetPipeline(const FSingularisCombinePipeline& 
 
 	// 2) 替换管线并立即重估
 	CombinePipeline = InPipeline;
+	BindDependencyProvider();
 	EvaluatePipeline();
 }
 
@@ -290,6 +281,7 @@ void USingularisCombineComponent::ClearPipeline()
 void USingularisCombineComponent::AddCombineEntry(const FSingularisCombineEntry& Entry)
 {
 	CombinePipeline.Combines.Add(Entry);
+	BindDependencyProvider();
 	EvaluatePipeline();
 }
 
@@ -325,7 +317,7 @@ void USingularisCombineComponent::EvaluatePipeline()
 	// 3) 读取待处理事件载荷（TriggerEvaluate 写入，周期轮询时为空）
 	const FSingularisCombineTransientPayload Payload = PendingPayload;
 
-	// 4) 预解析管线所有策略声明的组件依赖（按 Context 的三个 Actor 分别缓存）
+	// 4) 预解析管线所有策略声明的组件依赖（按作用域映射到 Context 中的 Actor 缓存）
 	ResolveDependencies(Context);
 
 	for (FSingularisCombineEntry& Entry : CombinePipeline.Combines)
@@ -470,4 +462,32 @@ void USingularisCombineComponent::OnOwnerChildComponentConstructed(UObject* Obje
 		0.0f,
 		false
 	);
+}
+
+void USingularisCombineComponent::BindDependencyProvider()
+{
+	// 1) 将本组件注入为管线中所有策略的依赖查询提供者
+	for (const FSingularisCombineEntry& Entry : CombinePipeline.Combines)
+	{
+		if (USingularisCombine* const Combine = Entry.Combine)
+			Combine->SetDependencyProvider(this);
+	}
+}
+
+AActor* USingularisCombineComponent::GetContextActor(
+	const FSingularisCombineContext& Context,
+	const ESingularisCombineDependencyScope Scope
+)
+{
+	switch (Scope)
+	{
+	case ESingularisCombineDependencyScope::Instigator:
+		return Context.Instigator;
+	case ESingularisCombineDependencyScope::Avatar:
+		return Context.Avatar;
+	case ESingularisCombineDependencyScope::Target:
+		return Context.Target;
+	default:
+		return nullptr;
+	}
 }

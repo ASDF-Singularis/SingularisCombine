@@ -34,8 +34,9 @@
 | `FSingularisCombineTransientPayload`（瞬态负荷，新增） | 新建 USTRUCT，承载事件标识 + 结构化数据 |
 | `ESingularisCombineDependencyScope`（枚举，新增） | 标识依赖归属的 Context Actor（Instigator / Avatar / Target） |
 | `FSingularisCombineDependencyList`（USTRUCT，新增） | 包装 `TArray<TSubclassOf<UActorComponent>>` 作为 TMap 值类型，绕过 UHT 不支持嵌套容器的反射限制 |
-| `USingularisCombine`（策略基类） | SPI 形参新增 Payload；增加声明式依赖配置（TMap 作用域→类型列表） + 查询辅助函数（`GetDependency(Actor, Class)` / `GetAvatarComponent(Class)`，委托组件缓存） |
-| `USingularisCombineComponent`（化合组件） | 增加 `TriggerEvaluate(Payload)` API；维护组件层 `CachedDependencies` 缓存与 `ResolveDependencies(Context)` / `AreDependenciesSatisfied(Strategy, Context)` / `GetDependency(Actor, Class)`；Context 构建保持纯粹身份 |
+| `ISingularisCombineDependencyProvider`（UINTERFACE，新增） | 依赖查询提供者接口：化合组件实现并注入策略，策略经此读取依赖，解除策略对组件类的直接引用（依赖倒置） |
+| `USingularisCombine`（策略基类） | SPI 形参新增 Payload；增加声明式依赖配置（TMap 作用域→类型列表）+ 查询辅助函数（`GetDependency(Scope, Class)` / `GetAvatarComponent(Class)`，委托注入的提供者） |
+| `USingularisCombineComponent`（化合组件） | 增加 `TriggerEvaluate(Payload)` API；实现 `ISingularisCombineDependencyProvider`；维护组件层 `CachedDependencies` 缓存（按作用域分组）与 `ResolveDependencies(Context)` / `AreDependenciesSatisfied(Strategy, Context)` / `GetDependency(Scope, Class)`；Context 构建保持纯粹身份 |
 | `SingularisCombine.Build.cs` | 无需改动（`FInstancedStruct` 在 UE 5.8 中已内置 `CoreUObject` 模块） |
 
 ## Context 与 Payload 分离
@@ -50,10 +51,10 @@
 
 ## 查询机制：声明式依赖 + 辅助函数
 
-声明式依赖注入采用"策略声明、组件缓存"的分层设计：
+声明式依赖注入采用“策略声明、组件缓存、提供者注入”的分层设计：
 
-- **策略层（`USingularisCombine`）**：仅负责声明所需依赖的类型与作用域（编辑器配置），并提供查询入口（委托组件缓存）
-- **组件层（`USingularisCombineComponent`）**：负责按 Context 收集 Actor 依赖、维护缓存、做前置满足性检查
+- **策略层（`USingularisCombine`）**：仅负责声明所需依赖的类型与作用域（编辑器配置），并提供查询入口（委托注入的 `ISingularisCombineDependencyProvider`）
+- **组件层（`USingularisCombineComponent`）**：实现依赖查询提供者并注入策略，负责按 Context 收集 Actor 依赖、维护缓存、做前置满足性检查
 
 策略保持轻量（无运行时缓存状态），缓存与解析全部归化合组件所有，与 `EvaluatePipeline` / `TickComponent` 的生命周期一致。
 
@@ -105,8 +106,8 @@ TMap<ESingularisCombineDependencyScope, FSingularisCombineDependencyList> Compon
 
 ```cpp
 // USingularisCombineComponent: 私有缓存（位于 Internal Variable region）
-// 注：非 UPROPERTY，纯 C++ 运行时成员（无需蓝图暴露；策略通过 GetDependency 委托读取）
-TMap<TWeakObjectPtr<AActor>, TMap<TSubclassOf<UActorComponent>, TWeakObjectPtr<UActorComponent>>> CachedDependencies{};
+// 注：非 UPROPERTY，纯 C++ 运行时成员（无需蓝图暴露；策略通过注入的提供者委托读取）
+TMap<ESingularisCombineDependencyScope, TMap<TSubclassOf<UActorComponent>, TWeakObjectPtr<UActorComponent>>> CachedDependencies{};
 
 // 解析入口：每次评估前刷新缓存
 void ResolveDependencies(const FSingularisCombineContext& Context);
@@ -114,17 +115,20 @@ void ResolveDependencies(const FSingularisCombineContext& Context);
 // 前置预检：声明依赖是否全部命中缓存
 bool AreDependenciesSatisfied(const USingularisCombine* Strategy, const FSingularisCombineContext& Context) const;
 
-// 缓存查询（C++ 侧，无 UFUNCTION；策略 GetDependency 委托至此）
-UActorComponent* GetDependency(AActor* Actor, TSubclassOf<UActorComponent> ComponentClass) const;
+// 缓存查询（C++ 侧，无 UFUNCTION；实现 ISingularisCombineDependencyProvider，策略经接口委托至此）
+UActorComponent* GetDependency(ESingularisCombineDependencyScope Scope, TSubclassOf<UActorComponent> ComponentClass) const;
+
+// 兜底即时查询（实现 ISingularisCombineDependencyProvider，沿 Owner Actor 查找）
+UActorComponent* GetAvatarComponent(TSubclassOf<UActorComponent> ComponentClass) const;
 ```
 
 `ResolveDependencies(Context)` 流程：
 
 1. `Reset()` 缓存
 2. 聚合管线所有策略的 `ComponentDependencies` 并集，按作用域分组为 `TMap<Scope, TSet<Class>>`
-3. 按作用域映射到 Context 中的 Actor（Instigator / Avatar / Target）
-4. 对每个 Actor 调用 `GetComponentByClass(Class)` 查找并写入缓存（`FindOrAdd` 方式）
-5. 同一 Actor 出现在多个作用域（如 Avatar == Target == OwnerActor）时，通过 `FindOrAdd` 累积为同一缓存条目
+3. 逐作用域调用 `GetContextActor(Context, Scope)` 映射到 Context 中的 Actor（Instigator / Avatar / Target）
+4. 对每个作用域的 Actor 调用 `GetComponentByClass(Class)` 查找，并写入该作用域对应的缓存槽位（`FindOrAdd` 方式）
+5. 缓存槽位与声明结构一一对应：查询 `GetDependency(Scope, Class)` 直接按作用域定位，同一 Actor 出现在多个作用域时各作用域槽位独立缓存
 
 调用时机：
 
@@ -168,24 +172,25 @@ for (FSingularisCombineEntry& Entry : CombinePipeline.Combines)
 策略基类暴露两个 BlueprintPure 函数：
 
 ```cpp
-// USingularisCombine: 读取预缓存依赖（委托组件缓存）
+// USingularisCombine: 读取预缓存依赖（委托注入的 ISingularisCombineDependencyProvider）
 UFUNCTION(BlueprintPure, Category = "SingularisCombine|引力奇点化合|State", meta = (DisplayName = "GetDependency"))
-UActorComponent* GetDependency(AActor* Actor, TSubclassOf<UActorComponent> ComponentClass) const;
+UActorComponent* GetDependency(ESingularisCombineDependencyScope Scope, TSubclassOf<UActorComponent> ComponentClass) const;
 
-// USingularisCombine: 兜底查询，沿 Outer 链即时查找 Avatar 组件（无需 Context）
+// USingularisCombine: 兜底查询，通过注入的提供者即时查找 Avatar 组件（无需 Context）
 UFUNCTION(BlueprintPure, Category = "SingularisCombine|引力奇点化合|State", meta = (DisplayName = "GetAvatarComponent"))
 UActorComponent* GetAvatarComponent(TSubclassOf<UActorComponent> ComponentClass) const;
 ```
 
-- `GetDependency(Actor, Class)`：Actor 形参通常来自 `Context.Instigator / Avatar / Target`，内部委托化合组件的同名 C++ 方法。必须在 `ResolveDependencies(Context)` 之后调用。
-- `GetAvatarComponent(Class)`：无需 Context 也无需编辑器声明，每次调用沿 Outer 链即时查询，用于未声明的临时/动态访问。
+- `GetDependency(Scope, Class)`：Scope 形参为作用域枚举，内部委托注入的 `ISingularisCombineDependencyProvider`（化合组件实现）。必须在 `ResolveDependencies(Context)` 之后调用。
+- `GetAvatarComponent(Class)`：无需 Context 也无需编辑器声明，通过注入的提供者即时查询 Avatar 上的组件，用于未声明的临时/动态访问。
+- 提供者注入：化合组件在 `BeginPlay` / `SetPipeline` / `AddCombineEntry` 时调用 `SetDependencyProvider(this)` 注入自身（`BindDependencyProvider`），策略经 `TWeakInterfacePtr` 弱引用持有，随组件生命周期自动失效。
 
 ### 蓝图体验对比
 
 | 方式 | 节点数 | 说明 |
 |------|--------|------|
 | 现状 | 4-5 | Get Outer → Cast → Get Owner → Get Component by Class → Is Valid |
-| 声明式 | 2 | 编辑器配置依赖类 → `GetDependency(Context.Avatar, Class)` + 一次 Cast |
+| 声明式 | 2 | 编辑器配置依赖类 → `GetDependency(作用域, Class)` + 一次 Cast |
 | 兜底 | 2 | `GetAvatarComponent(Class)` + 一次 Cast |
 
 蓝图函数返回 `UActorComponent*`，受蓝图不支持模板限制，需一次 Cast 到具体类型。
@@ -324,7 +329,7 @@ void SustainReaction(
 
 ## 错误处理与边界
 
-1. 依赖查找失败：`ResolveDependencies(Context)` 找不到组件时对应槽位留空；策略 `GetDependency(Actor, Class)` 返回 `nullptr`。注意策略评估主循环中已通过 `AreDependenciesSatisfied` 前置预检保证 `CanReaction` / `Reaction` 不在依赖缺失时执行，此处 `nullptr` 仅见于 `SustainReaction` 等绕过预检的路径，或策略声明变更后尚未触发重估的窗口。注：`TickComponent` 中 `Context.Target = nullptr`（`SingularisCombineComponent.cpp:86`），故 `SustainReaction` 路径无法解析 Target 作用域依赖；声明 Target 作用域依赖仅对 `EvaluatePipeline`（服务端，`Context.Target = OwnerActor`）路径生效。
+1. 依赖查找失败：`ResolveDependencies(Context)` 找不到组件时对应作用域槽位留空；策略 `GetDependency(Scope, Class)` 返回 `nullptr`。注意策略评估主循环中已通过 `AreDependenciesSatisfied` 前置预检保证 `CanReaction` / `Reaction` 不在依赖缺失时执行，此处 `nullptr` 仅见于 `SustainReaction` 等绕过预检的路径，或策略声明变更后尚未触发重估的窗口。注：`TickComponent` 中 `Context.Target = nullptr`（`SingularisCombineComponent.cpp:86`），故 `SustainReaction` 路径无法解析 Target 作用域依赖；声明 Target 作用域依赖仅对 `EvaluatePipeline`（服务端，`Context.Target = OwnerActor`）路径生效。
 2. 缓存失效：`TWeakObjectPtr` 在组件销毁后自动失效；下一评估周期 `ResolveDependencies(Context)` 重新填充；`AreDependenciesSatisfied` 的预检会捕获该失效并将策略回滚
 3. Payload 幂等性：现有"激活才 Reaction、未激活才 Revert"的幂等机制已保证不会因 Payload 重复触发副作用；策略应综合 Payload.EventTag + 黑板判断
 4. Payload 类型不匹配：`FInstancedStruct` 的蓝图 `Get Instanced Struct Value` 节点提供 Valid/Invalid 引脚，类型不匹配走 Invalid 分支，不报错；C++ 侧 `GetPtr<T>()` 返回 `nullptr`，策略需判空
@@ -335,7 +340,7 @@ void SustainReaction(
 项目无 LSP，化合策略在蓝图实现，验证依赖：
 
 1. 编译验证：C++ 改动通过项目编译，`Build.cs` 无需改动（`FInstancedStruct` 在 `CoreUObject` 中）
-2. 依赖注入验证：测试蓝图策略配置 `ComponentDependencies`（按作用域结构化声明，如 `{ Avatar: [UEquipmentComponent], Instigator: [UPlayerControllerComp] }`），验证 `GetDependency(Context.Avatar, Class)` 返回正确引用、组件增删后缓存自动校正、`AreDependenciesSatisfied` 在缺依赖时阻止 `CanReaction` 执行
+2. 依赖注入验证：测试蓝图策略配置 `ComponentDependencies`（按作用域结构化声明，如 `{ Avatar: [UEquipmentComponent], Instigator: [UPlayerControllerComp] }`），验证 `GetDependency(作用域, Class)` 返回正确引用、组件增删后缓存自动校正、`AreDependenciesSatisfied` 在缺依赖时阻止 `CanReaction` 执行
 3. 事件触发验证：调用 `TriggerEvaluate`，验证策略读取到 Payload.EventTag 且即时评估（不等轮询周期）
 4. Payload 传递验证：测试 `FInstancedStruct` 在蓝图中的 Make/Get 流程，验证策略正确读取结构化数据
 5. 回归验证：现有上层化合策略（无依赖配置、不读 Payload）行为完全不变；SPI 签名变更后蓝图需重新连线
@@ -353,10 +358,11 @@ void SustainReaction(
 - `Plugins/SingularisCombine/Source/SingularisCombine/Public/Types/SingularisCombineTransientPayload.h`（新建）：定义 `FSingularisCombineTransientPayload`，include `CoreUObject` 的 `StructUtils/InstancedStruct.h`
 - `Plugins/SingularisCombine/Source/SingularisCombine/Public/Types/SingularisCombineDependencyScope.h`（新建）：定义 `ESingularisCombineDependencyScope` 枚举（Instigator / Avatar / Target）
 - `Plugins/SingularisCombine/Source/SingularisCombine/Public/Types/SingularisCombineDependencyList.h`（新建）：定义 `FSingularisCombineDependencyList` USTRUCT，包装 `TArray<TSubclassOf<UActorComponent>>` 作为 TMap 值类型绕过 UHT 限制
-- `Plugins/SingularisCombine/Source/SingularisCombine/Public/Objects/SingularisCombineBase.h`：SPI 签名新增 Payload 形参；新增 `ComponentDependencies`（TMap 作用域→类型列表）；新增查询函数 `GetDependency(AActor*, Class)` / `GetAvatarComponent(Class)`
-- `Plugins/SingularisCombine/Source/SingularisCombine/Private/Objects/SingularisCombineBase.cpp`：SPI 实现新增 Payload；实现查询函数（委托化合组件缓存）
-- `Plugins/SingularisCombine/Source/SingularisCombine/Public/Components/SingularisCombineComponent.h`：新增 `TriggerEvaluate` 声明、`PendingPayload` 内部变量；新增 `CachedDependencies`（嵌套 TMap，纯 C++）、`ResolveDependencies(Context)`、`AreDependenciesSatisfied(Strategy, Context)`、组件层 `GetDependency(Actor, Class)`
-- `Plugins/SingularisCombine/Source/SingularisCombine/Private/Components/SingularisCombineComponent.cpp`：实现 `TriggerEvaluate`、`EvaluatePipeline` 增加 `ResolveDependencies(Context)` 与 `AreDependenciesSatisfied` 前置预检、Payload 传递；`TickComponent` 增加 `ResolveDependencies(Context)`；实现 `ResolveDependencies` / `AreDependenciesSatisfied` / 组件层 `GetDependency`
+- `Plugins/SingularisCombine/Source/SingularisCombine/Public/Interfaces/SingularisCombineDependencyProvider.h`（新建）：定义 `ISingularisCombineDependencyProvider` UINTERFACE（`GetDependency(Scope, Class)` / `GetAvatarComponent(Class)`）
+- `Plugins/SingularisCombine/Source/SingularisCombine/Public/Objects/SingularisCombineBase.h`：SPI 签名新增 Payload 形参；新增 `ComponentDependencies`（TMap 作用域→类型列表）；新增查询函数 `GetDependency(Scope, Class)` / `GetAvatarComponent(Class)` 与 `SetDependencyProvider`（提供者注入）
+- `Plugins/SingularisCombine/Source/SingularisCombine/Private/Objects/SingularisCombineBase.cpp`：SPI 实现新增 Payload；实现查询函数（委托注入的依赖查询提供者，不再直接引用化合组件类）
+- `Plugins/SingularisCombine/Source/SingularisCombine/Public/Components/SingularisCombineComponent.h`：新增 `TriggerEvaluate` 声明、`PendingPayload` 内部变量；实现 `ISingularisCombineDependencyProvider`；新增 `CachedDependencies`（按作用域分组的嵌套 TMap，纯 C++）、`ResolveDependencies(Context)`、`AreDependenciesSatisfied(Strategy, Context)`、`BindDependencyProvider`、`GetContextActor`、组件层 `GetDependency(Scope, Class)` / `GetAvatarComponent(Class)`
+- `Plugins/SingularisCombine/Source/SingularisCombine/Private/Components/SingularisCombineComponent.cpp`：实现 `TriggerEvaluate`、`EvaluatePipeline` 增加 `ResolveDependencies(Context)` 与 `AreDependenciesSatisfied` 前置预检、Payload 传递；`TickComponent` 增加 `ResolveDependencies(Context)`；`BeginPlay` / `SetPipeline` / `AddCombineEntry` 注入依赖查询提供者；实现 `ResolveDependencies` / `AreDependenciesSatisfied` / 组件层 `GetDependency` / `GetAvatarComponent` / `BindDependencyProvider` / `GetContextActor`
 
 ## 设计来源
 

@@ -44,7 +44,7 @@
 | **状态感知** | 遍历 Actor 及挂载组件，通过 `IGameplayTagAssetInterface` 提取并汇总 `BlackboardTags`。 |
 | **事件广播** | 状态更新时触发 `OnCombineBlackboardUpdatedEvent`，允许外部系统（如 UI）被动监听环境变化。 |
 | **管线求值** | 提供 `EvaluatePipeline()` 核心方法，按顺序逐一询问并执行 `CombinePipeline` 中的策略列表。所有策略独立判定，互不中断。 |
-| **依赖预解析** | 评估前调用组件层的 `ResolveDependencies(Context)`，按作用域聚合管线所有策略的 `ComponentDependencies`，对 `Context.Instigator / Avatar / Target` 三个 Actor 分别查找并缓存到 `CachedDependencies`；调用时机覆盖 `EvaluatePipeline` 与 `TickComponent`，保证 `SustainReaction` 中查询亦可用。 |
+| **依赖预解析** | 评估前调用组件层的 `ResolveDependencies(Context)`，按作用域聚合管线所有策略的 `ComponentDependencies`，将每个作用域映射到 Context 中对应 Actor 并查找缓存到 `CachedDependencies`；调用时机覆盖 `EvaluatePipeline` 与 `TickComponent`，保证 `SustainReaction` 中查询亦可用。 |
 | **依赖前置预检** | `AreDependenciesSatisfied(Strategy, Context)` 在 `CanReaction` 之前强约束检查：空声明=无条件满足；任意声明依赖缺失=不进入 `CanReaction`，直接走回滚路径。保证 `CanReaction` / `Reaction` 执行时声明依赖必定存在。 |
 | **事件驱动评估** | 提供 `TriggerEvaluate(Payload)` API，立即触发一次评估并将事件载荷贯穿整条管线，不等周期轮询。 |
 
@@ -63,21 +63,23 @@
 
 #### 声明式依赖注入 (Declarative Dependency Injection)
 
-策略基类提供声明式依赖注入机制，消除中层使用时反复 `GetComponentByClass` + `IsValid` 的查询样板。采用"策略声明、组件缓存"的分层设计：
+策略基类提供声明式依赖注入机制，消除中层使用时反复 `GetComponentByClass` + `IsValid` 的查询样板。采用“策略声明、组件缓存、提供者注入”的分层设计：策略通过化合组件注入的依赖查询提供者（`ISingularisCombineDependencyProvider`）读取依赖，不直接引用具体组件类（依赖倒置）。
 
 **策略层（`USingularisCombine`）**：
 
 - **`ComponentDependencies`：** 编辑器配置字段，类型为 `TMap<ESingularisCombineDependencyScope, FSingularisCombineDependencyList>`，按作用域（Instigator / Avatar / Target）结构化声明所需的依赖组件类型。UHT 不支持嵌套容器作为 UPROPERTY，因此用 `FSingularisCombineDependencyList` USTRUCT 包装 `TArray<TSubclassOf<UActorComponent>>` 作为 Map 值。
-- **`GetDependency(Actor, Class)`：** BlueprintPure 函数，读取预缓存依赖。Actor 形参来自 `Context.Instigator / Avatar / Target`，内部委托化合组件的同名 C++ 方法，零查找开销。
-- **`GetAvatarComponent(Class)`：** BlueprintPure 兜底函数，沿 Outer 链即时查找 Avatar 上的组件，用于未声明依赖的临时/动态访问。
+- **`GetDependency(Scope, Class)`：** BlueprintPure 函数，读取预缓存依赖。Scope 形参为作用域枚举（Instigator / Avatar / Target），内部委托注入的 `ISingularisCombineDependencyProvider`，零查找开销。
+- **`GetAvatarComponent(Class)`：** BlueprintPure 兜底函数，通过注入的提供者即时查找 Avatar 上的组件，用于未声明依赖的临时/动态访问。
+- **`SetDependencyProvider(Provider)`：** 由化合组件在注册/替换管线时调用，将自身注入为策略的依赖查询入口，解除策略对具体组件类的直接引用。
 
 **组件层（`USingularisCombineComponent`）**：
 
-- **`CachedDependencies`：** 运行时缓存，类型为 `TMap<TWeakObjectPtr<AActor>, TMap<TSubclassOf<UActorComponent>, TWeakObjectPtr<UActorComponent>>>`，按 Actor 分组。纯 C++ 成员（非 UPROPERTY）。
-- **`ResolveDependencies(Context)`：** 评估前刷新缓存。聚合管线所有策略的声明并集，按作用域映射到 Context 中三个 Actor，通过 `FindOrAdd` 写入。同一 Actor 出现在多个作用域时累积为同一缓存条目。
+- **实现 `ISingularisCombineDependencyProvider`：** 组件实现依赖查询接口，通过 `BindDependencyProvider` 注入管线内所有策略，覆盖 `BeginPlay` / `SetPipeline` / `AddCombineEntry` 路径。
+- **`CachedDependencies`：** 运行时缓存，类型为 `TMap<ESingularisCombineDependencyScope, TMap<TSubclassOf<UActorComponent>, TWeakObjectPtr<UActorComponent>>>`，按作用域分组。纯 C++ 成员（非 UPROPERTY）。
+- **`ResolveDependencies(Context)`：** 评估前刷新缓存。聚合管线所有策略的声明并集，将每个作用域映射到 Context 中的 Actor（`GetContextActor`），按声明类型查找并写入对应作用域槽位。
 - **`AreDependenciesSatisfied(Strategy, Context)`：** `CanReaction` 的前置强约束。空声明返回 true（无条件满足）；任一声明依赖缺失返回 false（不进入 `CanReaction`，直接回滚）。保证 `CanReaction` / `Reaction` 执行时声明依赖必定存在。
 
-蓝图体验从 4-5 节点（Get Outer → Cast → Get Owner → Get Component by Class → Is Valid）简化为 2 节点（`GetDependency(Context.Avatar, Class)` + 一次 Cast）。
+蓝图体验从 4-5 节点（Get Outer → Cast → Get Owner → Get Component by Class → Is Valid）简化为 2 节点（`GetDependency(作用域, Class)` + 一次 Cast）。
 
 ### 3. `FSingularisCombineTransientPayload` (瞬态负荷)
 
@@ -146,6 +148,6 @@
 - **Defensive Programming (防御性编程)：** 在 `Reaction` 阶段对物理执行器进行判空，应对物理实体与抽象标签之间由于时序可能产生的短暂不一致。
 - **State Invalidation (状态失效)：** 当系统的部分组件被动态销毁时，宣告旧黑板作废，强制系统重新计算化合管线，是应对动态环境的核心机制。
 - **Decision vs. Execution (决策与执行分离)：** 架构原则。将“是否应该做（看 Tag）”和“具体怎么做（操纵 Actor）”严格区分为 `CanReaction` 与 `Reaction`。
-- **Declarative Dependency Injection (声明式依赖注入)：** 中层适配机制。策略在编辑器按作用域（Instigator / Avatar / Target）结构化声明所需组件类型，评估前由化合组件预解析并缓存，策略通过 `GetDependency(Actor, Class)` 零查找开销读取；`AreDependenciesSatisfied` 前置预检保证 `CanReaction` 执行时声明依赖必定存在，消除查询样板。
+- **Declarative Dependency Injection (声明式依赖注入)：** 中层适配机制。策略在编辑器按作用域（Instigator / Avatar / Target）结构化声明所需组件类型，评估前由化合组件预解析并缓存；化合组件将自身实现 `ISingularisCombineDependencyProvider` 注入策略，策略通过 `GetDependency(Scope, Class)` 零查找开销读取；`AreDependenciesSatisfied` 前置预检保证 `CanReaction` 执行时声明依赖必定存在，消除查询样板。
 - **Transient Payload (瞬态负荷)：** 中层适配机制。`FSingularisCombineTransientPayload` 承载事件驱动评估的瞬态载荷（EventTag + EventData），与 Context（稳定身份）分离，仅在本次评估有效。
 - **Event-Driven Evaluation (事件驱动评估)：** 中层适配机制。`TriggerEvaluate(Payload)` 立即触发评估并携带事件载荷，突破周期轮询的被动模型，支持中层主动事件响应。

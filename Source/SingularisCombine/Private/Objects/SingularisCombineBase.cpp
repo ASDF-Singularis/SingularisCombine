@@ -4,7 +4,7 @@
 #include <GameFramework/Actor.h>
 #include <Net/UnrealNetwork.h>
 
-#include "Components/SingularisCombineComponent.h"
+#include "Interfaces/SingularisCombineDependencyProvider.h"
 #include "Types/SingularisCombineTransientPayload.h"
 
 UWorld* USingularisCombine::GetWorld() const
@@ -95,14 +95,17 @@ void USingularisCombine::SustainReaction_Implementation(
 
 void USingularisCombine::OnRep_IsActive_Implementation() const {}
 
-UActorComponent* USingularisCombine::GetDependency(AActor* Actor, const TSubclassOf<UActorComponent> ComponentClass) const
+UActorComponent* USingularisCombine::GetDependency(
+	const ESingularisCombineDependencyScope Scope,
+	const TSubclassOf<UActorComponent> ComponentClass
+) const
 {
-	if (!Actor || !ComponentClass)
+	if (!ComponentClass)
 		return nullptr;
 
-	// 1) 委托化合组件的缓存查询
-	if (const USingularisCombineComponent* const CombineComponent = Cast<USingularisCombineComponent>(GetOuter()))
-		return CombineComponent->GetDependency(Actor, ComponentClass);
+	// 1) 委托注入的依赖查询提供者
+	if (const ISingularisCombineDependencyProvider* const Provider = DependencyProvider.Get())
+		return Provider->GetDependency(Scope, ComponentClass);
 
 	return nullptr;
 }
@@ -112,15 +115,14 @@ UActorComponent* USingularisCombine::GetAvatarComponent(const TSubclassOf<UActor
 	if (!ComponentClass)
 		return nullptr;
 
-	// 1) 沿 Outer 链查找化合组件 → OwnerActor
-	USingularisCombineComponent* const CombineComponent = Cast<USingularisCombineComponent>(GetOuter());
-	if (!CombineComponent)
-		return nullptr;
+	// 1) 委托注入的依赖查询提供者即时查找 Avatar 组件
+	if (const ISingularisCombineDependencyProvider* const Provider = DependencyProvider.Get())
+		return Provider->GetAvatarComponent(ComponentClass);
 
-	AActor* const OwnerActor = CombineComponent->GetOwner();
-	if (!OwnerActor)
-		return nullptr;
+	return nullptr;
+}
 
-	// 2) 在 OwnerActor 上即时查找目标组件
-	return OwnerActor->GetComponentByClass(ComponentClass);
+void USingularisCombine::SetDependencyProvider(ISingularisCombineDependencyProvider* Provider)
+{
+	DependencyProvider = Provider;
 }

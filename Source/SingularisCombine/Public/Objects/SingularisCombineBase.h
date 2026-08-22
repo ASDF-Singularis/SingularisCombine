@@ -3,14 +3,15 @@
 #include <CoreMinimal.h>
 #include <GameplayTagContainer.h>
 #include <UObject/Object.h>
+#include <UObject/WeakInterfacePtr.h>
 
+#include "Interfaces/SingularisCombineDependencyProvider.h"
 #include "Types/SingularisCombineDependencyList.h"
 #include "Types/SingularisCombineDependencyScope.h"
 #include "Types/SingularisCombineTransientPayload.h"
 #include "Types/SingularisCombineType.h"
 #include "SingularisCombineBase.generated.h"
 
-class AActor;
 class UActorComponent;
 
 /**
@@ -81,8 +82,8 @@ public:
 
 	/**
 	 * 获取预缓存的依赖组件
-	 * 内部委托化合组件的缓存查询；必须在化合组件的 ResolveDependencies(Context) 之后调用。
-	 * @param Actor           目标 Actor（通常来自 Context.Instigator/Avatar/Target）
+	 * 内部委托注入的依赖查询提供者；必须在化合组件的 ResolveDependencies(Context) 之后调用。
+	 * @param Scope           依赖作用域（Instigator / Avatar / Target）
 	 * @param ComponentClass  声明在 ComponentDependencies 中的组件类型
 	 * @return 预缓存的组件引用，未找到或未声明时返回 nullptr
 	 */
@@ -91,10 +92,13 @@ public:
 		Category = "SingularisCombine|引力奇点化合|State",
 		meta = (DisplayName = "GetDependency")
 	)
-	UActorComponent* GetDependency(AActor* Actor, TSubclassOf<UActorComponent> ComponentClass) const;
+	UActorComponent* GetDependency(
+		ESingularisCombineDependencyScope Scope,
+		TSubclassOf<UActorComponent> ComponentClass
+	) const;
 
 	/**
-	 * 兜底查询：沿 Outer 链即时查找 Avatar 上的组件
+	 * 兜底查询：通过注入的依赖查询提供者即时查找 Avatar 上的组件
 	 * 用于未在 ComponentDependencies 中声明的临时/动态查询
 	 * @param ComponentClass  目标组件类型
 	 * @return 查找到的组件引用，未找到时返回 nullptr
@@ -218,6 +222,26 @@ public:
 		meta = (DisplayName = "OnRep_IsActive")
 	)
 	void OnRep_IsActive() const;
+
+#pragma endregion
+
+#pragma region Dependency Injection
+
+	/**
+	 * 注入依赖查询提供者
+	 * 由化合组件在注册/替换管线时调用，将自身注入为策略的依赖查询入口，
+	 * 解除策略对具体组件类的直接引用（依赖倒置）。
+	 * @param Provider  依赖查询提供者（通常为挂载本策略的化合组件）
+	 */
+	void SetDependencyProvider(ISingularisCombineDependencyProvider* Provider);
+
+#pragma endregion
+
+private:
+#pragma region Internal Variable
+
+	/** 化合组件注入的依赖查询提供者（弱引用，随组件生命周期自动失效） */
+	TWeakInterfacePtr<ISingularisCombineDependencyProvider> DependencyProvider{};
 
 #pragma endregion
 };

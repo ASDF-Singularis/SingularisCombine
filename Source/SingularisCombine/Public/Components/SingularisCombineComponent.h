@@ -5,10 +5,13 @@
 #include <TimerManager.h>
 #include <Components/ActorComponent.h>
 
+#include "Interfaces/SingularisCombineDependencyProvider.h"
 #include "Types/SingularisCombineComponentType.h"
+#include "Types/SingularisCombineDependencyScope.h"
 #include "Types/SingularisCombineTransientPayload.h"
 #include "SingularisCombineComponent.generated.h"
 
+struct FSingularisCombineContext;
 class USingularisCombine;
 class UActorComponent;
 
@@ -36,7 +39,8 @@ UCLASS(
 	ClassGroup = ("Singularis"),
 	meta = (BlueprintSpawnableComponent, DisplayName = "引力奇点化合组件")
 )
-class SINGULARISCOMBINE_API USingularisCombineComponent : public UActorComponent
+class SINGULARISCOMBINE_API USingularisCombineComponent : public UActorComponent,
+                                                          public ISingularisCombineDependencyProvider
 {
 	GENERATED_BODY()
 
@@ -111,10 +115,11 @@ private:
 	FSingularisCombineTransientPayload PendingPayload{};
 
 	/**
-	 * 依赖组件缓存：按 Actor 分组，每个 Actor 内按组件类型缓存
+	 * 依赖组件缓存：按作用域分组，每个作用域内按组件类型缓存
 	 * 由 ResolveDependencies(Context) 每次评估前刷新
 	 */
-	TMap<TWeakObjectPtr<AActor>, TMap<TSubclassOf<UActorComponent>, TWeakObjectPtr<UActorComponent>>> CachedDependencies
+	TMap<ESingularisCombineDependencyScope, TMap<TSubclassOf<UActorComponent>, TWeakObjectPtr<UActorComponent>>>
+	CachedDependencies
 		{};
 
 #pragma endregion
@@ -161,7 +166,8 @@ public:
 
 	/**
 	 * 预解析管线中所有策略声明的组件依赖
-	 * 收集所有策略的 ComponentDependencies 并集，对 Context 中三个 Actor 分别按声明类型查找并缓存。
+	 * 收集所有策略的 ComponentDependencies 并集，将每个作用域映射到 Context 中的 Actor，
+	 * 按声明类型查找并缓存到对应作用域槽位。
 	 * 必须在策略评估前调用；策略通过 GetDependency 读取缓存。
 	 * @param Context  化合上下文，提供 Instigator/Avatar/Target 三个 Actor
 	 */
@@ -169,11 +175,21 @@ public:
 
 	/**
 	 * 查询预缓存的依赖组件
-	 * @param Actor           目标 Actor
+	 * @param Scope           依赖作用域（Instigator / Avatar / Target）
 	 * @param ComponentClass  组件类型
 	 * @return 预缓存的组件引用，未找到时返回 nullptr
 	 */
-	UActorComponent* GetDependency(AActor* Actor, TSubclassOf<UActorComponent> ComponentClass) const;
+	virtual UActorComponent* GetDependency(
+		ESingularisCombineDependencyScope Scope,
+		TSubclassOf<UActorComponent> ComponentClass
+	) const override;
+
+	/**
+	 * 沿 Owner Actor 即时查询组件（未缓存，供未声明依赖的动态访问兜底）
+	 * @param ComponentClass  组件类型
+	 * @return 查找到的组件引用，未找到时返回 nullptr
+	 */
+	virtual UActorComponent* GetAvatarComponent(TSubclassOf<UActorComponent> ComponentClass) const override;
 
 	/**
 	 * 检查策略声明的依赖是否全部满足
@@ -261,6 +277,12 @@ private:
 	 * 当任意 UActorComponent 被构造且其 Outer 为本组件 OwnerActor 时，合并触发管线评估。
 	 */
 	void OnOwnerChildComponentConstructed(UObject* Object);
+
+	/** 将本组件注入为管线中所有策略的依赖查询提供者（依赖倒置，解除策略对组件的直接引用） */
+	void BindDependencyProvider();
+
+	/** 将依赖作用域映射为 Context 中对应的 Actor */
+	static AActor* GetContextActor(const FSingularisCombineContext& Context, ESingularisCombineDependencyScope Scope);
 
 #pragma endregion
 };
