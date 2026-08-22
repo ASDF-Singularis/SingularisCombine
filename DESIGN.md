@@ -68,8 +68,7 @@
 **策略层（`USingularisCombine`）**：
 
 - **`ComponentDependencies`：** 编辑器配置字段，类型为 `TMap<ESingularisCombineDependencyScope, FSingularisCombineDependencyList>`，按作用域（Instigator / Avatar / Target）结构化声明所需的依赖组件类型。UHT 不支持嵌套容器作为 UPROPERTY，因此用 `FSingularisCombineDependencyList` USTRUCT 包装 `TArray<TSubclassOf<UActorComponent>>` 作为 Map 值。
-- **`GetDependency(Scope, Class)`：** BlueprintPure 函数，读取预缓存依赖。Scope 形参为作用域枚举（Instigator / Avatar / Target），内部委托注入的 `ISingularisCombineDependencyProvider`，零查找开销。
-- **`GetAvatarComponent(Class)`：** BlueprintPure 兜底函数，通过注入的提供者即时查找 Avatar 上的组件，用于未声明依赖的临时/动态访问。
+- **`GetDependency(Scope, Class)`：** BlueprintPure 函数，读取预缓存依赖。Scope 形参为作用域枚举（Instigator / Avatar / Target），内部委托注入的 `ISingularisCombineDependencyProvider`，零查找开销。蓝图侧以 `DeterminesOutputType = "ComponentClass"` 自动推导输出类型免 Cast；C++ 侧提供模板便捷版 `GetDependency<T>(Scope)` 自动转换返回类型。
 - **`SetDependencyProvider(Provider)`：** 由化合组件在注册/替换管线时调用，将自身注入为策略的依赖查询入口，解除策略对具体组件类的直接引用。
 
 **组件层（`USingularisCombineComponent`）**：
@@ -131,7 +130,7 @@
 
 ### 2. 在 Reaction 中进行防御性编程 (Defensive Programming)
 
-`CanReaction` 验证的是"逻辑真理"（Tag 存在），而 `Reaction` 面临的是"物理现实"（组件可能刚被销毁）。声明式依赖注入的 `AreDependenciesSatisfied` 前置预检保证在声明依赖存在时才进入 `CanReaction` / `Reaction`，策略可假定声明依赖已就绪。但 `GetAvatarComponent` 等兜底查询或未声明的动态访问仍**必须**判空，应对物理实体与抽象标签之间由于时序可能产生的短暂不一致。
+`CanReaction` 验证的是"逻辑真理"（Tag 存在），而 `Reaction` 面临的是"物理现实"（组件可能刚被销毁）。声明式依赖注入的 `AreDependenciesSatisfied` 前置预检保证在声明依赖存在时才进入 `CanReaction` / `Reaction`，策略可假定声明依赖已就绪。但未声明的动态访问仍**必须**判空，应对物理实体与抽象标签之间由于时序可能产生的短暂不一致。
 
 ### 3. 利用 Early Out (提前退出) 保护性能
 

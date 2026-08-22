@@ -5,6 +5,8 @@
 #include <UObject/Object.h>
 #include <UObject/WeakInterfacePtr.h>
 
+#include <Templates/Casts.h>
+
 #include "Interfaces/SingularisCombineDependencyProvider.h"
 #include "Types/SingularisCombineDependencyList.h"
 #include "Types/SingularisCombineDependencyScope.h"
@@ -90,12 +92,25 @@ public:
 	UFUNCTION(
 		BlueprintPure,
 		Category = "SingularisCombine|引力奇点化合|State",
-		meta = (DisplayName = "GetDependency")
+		meta = (DisplayName = "GetDependency", DeterminesOutputType = "ComponentClass")
 	)
 	UActorComponent* GetDependency(
 		ESingularisCombineDependencyScope Scope,
 		TSubclassOf<UActorComponent> ComponentClass
 	) const;
+
+	/**
+	 * 获取预缓存的依赖组件（模板便捷版，自动转换返回类型）
+	 * 等价于 Cast<T>(GetDependency(Scope, T::StaticClass()))，供 C++ 策略免去手动转换。
+	 * @param Scope  依赖作用域（Instigator / Avatar / Target）
+	 * @return 预缓存的组件引用，未找到或未声明时返回 nullptr
+	 */
+	template <typename T>
+	T* GetDependency(ESingularisCombineDependencyScope Scope) const
+	{
+		static_assert(TIsDerivedFrom<T, UActorComponent>::Value, "T 必须是 UActorComponent 的派生类");
+		return Cast<T>(GetDependency(Scope, T::StaticClass()));
+	}
 
 #pragma endregion
 
