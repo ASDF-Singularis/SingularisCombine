@@ -114,6 +114,14 @@ void USingularisCombineComponent::TickComponent(
 
 void USingularisCombineComponent::ResolveDependencies(const FSingularisCombineContext& Context)
 {
+	UE_LOG(
+		LogSingularisCombine,
+		Display,
+		TEXT("[%s] ResolveDependencies：开始预解析（管线策略=%d）"),
+		*GetNameSafe(GetOwner()),
+		CombinePipeline.Combines.Num()
+	);
+
 	CachedDependencies.Reset();
 
 	// 1) 收集所有策略声明的依赖并集，按作用域分组
@@ -129,7 +137,7 @@ void USingularisCombineComponent::ResolveDependencies(const FSingularisCombineCo
 
 		UE_LOG(
 			LogSingularisCombine,
-			Verbose,
+			Display,
 			TEXT("[%s] ResolveDependencies：策略 %s 声明 %d 个作用域"),
 			*GetNameSafe(GetOwner()),
 			*GetNameSafe(Combine->GetClass()),
@@ -151,7 +159,7 @@ void USingularisCombineComponent::ResolveDependencies(const FSingularisCombineCo
 	{
 		UE_LOG(
 			LogSingularisCombine,
-			Verbose,
+			Display,
 			TEXT("[%s] ResolveDependencies：管线策略无任何声明依赖（缓存为空）"),
 			*GetNameSafe(GetOwner())
 		);
@@ -215,7 +223,7 @@ USingularisCombineComponent::GetDeclaredComponentClasses(UClass* StrategyClass)
 		{
 			UE_LOG(
 				LogSingularisCombine,
-				Verbose,
+				Display,
 				TEXT("GetDeclaredComponentClasses：注册表命中类 %s（%d 个作用域）"),
 				*GetNameSafe(Class),
 				Found->Num()
@@ -231,7 +239,7 @@ USingularisCombineComponent::GetDeclaredComponentClasses(UClass* StrategyClass)
 
 	UE_LOG(
 		LogSingularisCombine,
-		Verbose,
+		Display,
 		TEXT("GetDeclaredComponentClasses：策略类 %s 聚合得到 %d 个作用域声明"),
 		*GetNameSafe(StrategyClass),
 		Result.Num()
