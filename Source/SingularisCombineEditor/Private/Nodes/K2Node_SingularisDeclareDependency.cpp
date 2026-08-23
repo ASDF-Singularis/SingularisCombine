@@ -10,6 +10,7 @@
 #include <Kismet2/CompilerResultsLog.h>
 
 #include "Objects/SingularisCombineBase.h"
+#include "Styles/SingularisCombineEditorStyle.h"
 
 #define LOCTEXT_NAMESPACE "K2Node_SingularisDeclareDependency"
 
@@ -156,7 +157,7 @@ FText UK2Node_SingularisDeclareDependency::GetNodeTitle(ENodeTitleType::Type Tit
 		return LOCTEXT("NodeTitle_None", "声明依赖");
 
 	return FText::Format(
-		LOCTEXT("NodeTitle", "声明依赖 {0}: {1}"),
+		LOCTEXT("NodeTitle", "声明依赖 \n {1} From {0}"),
 		ScopeEnum->GetDisplayNameTextByValue(ScopeValue),
 		ComponentType->GetDisplayNameText()
 	);
@@ -169,7 +170,22 @@ FText UK2Node_SingularisDeclareDependency::GetTooltipText() const
 
 FLinearColor UK2Node_SingularisDeclareDependency::GetNodeTitleColor() const
 {
-	return FLinearColor(1.0f, 1.0f, 1.0f);
+	return FLinearColor(0.25f, 0.16f, 0.04f);
+}
+
+FLinearColor UK2Node_SingularisDeclareDependency::GetNodeTitleTextColor() const
+{
+	return FLinearColor(1.0f, 0.85f, 0.3f);
+}
+
+FSlateIcon UK2Node_SingularisDeclareDependency::GetIconAndTint(FLinearColor& OutColor) const
+{
+	// 复用插件图标区分于普通调用节点；槽位由 FSingularisCombineEditorStyle 在模块启动时注册
+	OutColor = FLinearColor::White;
+	return FSlateIcon(
+		FSingularisCombineEditorStyle::GetStyleSetName(),
+		FSingularisCombineEditorStyle::GetDeclareDependencyIconName()
+	);
 }
 
 void UK2Node_SingularisDeclareDependency::ValidateNodeDuringCompilation(FCompilerResultsLog& MessageLog) const

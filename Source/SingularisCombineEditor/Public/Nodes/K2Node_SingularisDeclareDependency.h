@@ -2,6 +2,7 @@
 
 #include <CoreMinimal.h>
 #include <K2Node.h>
+#include <Textures/SlateIcon.h>
 
 #include "K2Node_SingularisDeclareDependency.generated.h"
 
@@ -48,8 +49,14 @@ public:
 	/** 节点悬浮提示 */
 	virtual FText GetTooltipText() const override;
 
-	/** 标题着色（紫色，区分于普通调用节点） */
+	/** 标题栏着色 */
 	virtual FLinearColor GetNodeTitleColor() const override;
+
+	/** 标题栏文本着色 */
+	virtual FLinearColor GetNodeTitleTextColor() const override;
+	
+	/** 节点图标：复用插件 Resources/Icon128.png（注册于 FSingularisCombineEditorStyle） */
+	virtual FSlateIcon GetIconAndTint(FLinearColor& OutColor) const override;
 
 	/** 纯节点：无执行引脚、无副作用，输出未连接时允许编译器修剪 */
 	virtual bool IsNodePure() const override { return true; }

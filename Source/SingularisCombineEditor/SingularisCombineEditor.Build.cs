@@ -13,15 +13,19 @@ public class SingularisCombineEditor : ModuleRules
 				"Core",
 				"CoreUObject",
 				"Engine",
+				"Projects",
 
 				"SingularisCombine",
+
+				"UMG",
+				"Slate",
+				"SlateCore",
+				"SVGImporter",
 
 				"BlueprintGraph",
 				"KismetCompiler",
 				"Kismet",
 
-				"UMG",
-				"UMGEditor",
 				"UnrealEd",
 				"AssetTools",
 				"ContentBrowser"

@@ -4,11 +4,15 @@
 
 #include "Factories/SingularisCombineFactory.h"
 #include "Nodes/SingularisCombineBlueprintCompileHooks.h"
+#include "Styles/SingularisCombineEditorStyle.h"
 
 #define LOCTEXT_NAMESPACE "FSingularisCombineEditorModule"
 
 void FSingularisCombineEditorModule::StartupModule()
 {
+	// 注册 Slate 样式集（K2 节点图标等），须先于任何取图标的 UI 创建
+	FSingularisCombineEditorStyle::Register();
+
 	IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
 
 	const EAssetTypeCategories::Type SingularisPluginCategory = AssetTools.RegisterAdvancedAssetCategory(
@@ -27,6 +31,8 @@ void FSingularisCombineEditorModule::StartupModule()
 void FSingularisCombineEditorModule::ShutdownModule()
 {
 	FSingularisCombineBlueprintCompileHook::Unregister(BlueprintCompileHandle);
+
+	FSingularisCombineEditorStyle::Unregister();
 
 	if (FModuleManager::Get().IsModuleLoaded("AssetTools"))
 	{
