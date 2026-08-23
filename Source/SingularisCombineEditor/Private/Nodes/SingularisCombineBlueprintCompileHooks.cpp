@@ -43,11 +43,11 @@ void FSingularisCombineBlueprintCompileHook::HandleCDOCompiled(
 		return;
 
 	// 2) 仅处理 USingularisCombine 派生蓝图
-	UClass* GeneratedClass = CDO ? CDO->GetClass() : nullptr;
+	const UClass* GeneratedClass = CDO ? CDO->GetClass() : nullptr;
 	if (!GeneratedClass || !GeneratedClass->IsChildOf(USingularisCombine::StaticClass()))
 		return;
 
-	UBlueprint* Blueprint = UBlueprint::GetBlueprintFromClass(GeneratedClass);
+	const UBlueprint* Blueprint = UBlueprint::GetBlueprintFromClass(GeneratedClass);
 	if (!Blueprint)
 		return;
 
