@@ -224,7 +224,7 @@ void UK2Node_SingularisDeclareDependency::GetMenuActions(FBlueprintActionDatabas
 
 FText UK2Node_SingularisDeclareDependency::GetMenuCategory() const
 {
-	return LOCTEXT("MenuCategory", "SingularisCombine|声明");
+	return LOCTEXT("MenuCategory", "SingularisCombine|Declarative");
 }
 
 bool UK2Node_SingularisDeclareDependency::IsCompatibleWithGraph(const UEdGraph* TargetGraph) const
