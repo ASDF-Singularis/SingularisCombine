@@ -141,8 +141,8 @@ void UK2Node_SingularisDeclareDependency::PinDefaultValueChanged(UEdGraphPin* Pi
 
 FText UK2Node_SingularisDeclareDependency::GetNodeTitle(ENodeTitleType::Type TitleType) const
 {
-	UEdGraphPin* ScopePin = FindPin(GetScopePinName());
-	UEdGraphPin* ClassPin = FindPin(GetComponentClassPinName());
+	const UEdGraphPin* ScopePin = FindPin(GetScopePinName());
+	const UEdGraphPin* ClassPin = FindPin(GetComponentClassPinName());
 
 	// 配置引脚缺失或未就绪时回退为通用标题
 	const UClass* ComponentType = ClassPin ? Cast<UClass>(ClassPin->DefaultObject) : nullptr;
@@ -177,7 +177,7 @@ void UK2Node_SingularisDeclareDependency::ValidateNodeDuringCompilation(FCompile
 	Super::ValidateNodeDuringCompilation(MessageLog);
 
 	// 1) 宿主蓝图必须为 USingularisCombine 派生
-	UBlueprint* Blueprint = GetBlueprint();
+	const UBlueprint* Blueprint = GetBlueprint();
 	if (!Blueprint || !Blueprint->ParentClass || !Blueprint->ParentClass->IsChildOf(USingularisCombine::StaticClass()))
 		MessageLog.Error(TEXT("@0 必须位于 USingularisCombine 派生蓝图中"), this);
 
@@ -218,13 +218,13 @@ bool UK2Node_SingularisDeclareDependency::IsCompatibleWithGraph(const UEdGraph* 
 		return false;
 
 	// 仅允许放入 USingularisCombine 派生蓝图，声明目标必须存在
-	UBlueprint* Blueprint = FBlueprintEditorUtils::FindBlueprintForGraph(TargetGraph);
+	const UBlueprint* Blueprint = FBlueprintEditorUtils::FindBlueprintForGraph(TargetGraph);
 	return Blueprint && Blueprint->ParentClass && Blueprint->ParentClass->IsChildOf(USingularisCombine::StaticClass());
 }
 
-void UK2Node_SingularisDeclareDependency::ConformOutputPinType()
+void UK2Node_SingularisDeclareDependency::ConformOutputPinType() const
 {
-	UEdGraphPin* ClassPin = FindPin(GetComponentClassPinName());
+	const UEdGraphPin* ClassPin = FindPin(GetComponentClassPinName());
 	UEdGraphPin* OutPin = FindPin(UEdGraphSchema_K2::PN_ReturnValue);
 	if (!ClassPin || !OutPin)
 		return;

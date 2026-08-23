@@ -75,5 +75,5 @@ public:
 
 private:
 	/** 依据 ComponentClass 引脚当前值刷新输出引脚类型（未配置时回退 UActorComponent） */
-	void ConformOutputPinType();
+	void ConformOutputPinType() const;
 };
