@@ -26,6 +26,13 @@ void FSingularisCombineBlueprintCompileHook::Unregister(FDelegateHandle& Handle)
 	}
 }
 
+/**
+ * CDO 编译完成回调：扫描蓝图全部图的声明节点，回填 CDO 的 DeclaredComponents
+ * 重复声明（相同 (Scope, Class)）经 AddUnique 去重，编译产物只保留一份；
+ * 仅收录未连接的静态声明，连接的动态值编译期不可知，不入 CDO。
+ * @param CDO      刚编译完成的类默认对象
+ * @param Context  编译上下文（含骨架编译标志）
+ */
 void FSingularisCombineBlueprintCompileHook::HandleCDOCompiled(
 	UObject* CDO,
 	const FObjectPostCDOCompiledContext& Context
@@ -44,7 +51,7 @@ void FSingularisCombineBlueprintCompileHook::HandleCDOCompiled(
 	if (!Blueprint)
 		return;
 
-	// 3) 扫描所有图中的 DeclareDependency 节点
+	// 3) 扫描所有图中的声明节点，按 (Scope, Class) 去重收集
 	TArray<UEdGraph*> AllGraphs;
 	Blueprint->GetAllGraphs(AllGraphs);
 
@@ -69,6 +76,7 @@ void FSingularisCombineBlueprintCompileHook::HandleCDOCompiled(
 			if (!ScopePin || !ClassPin || ScopePin->LinkedTo.Num() > 0 || ClassPin->LinkedTo.Num() > 0)
 				continue;
 
+			// 组件类未配置或作用域枚举名无效时跳过该节点
 			UClass* ComponentType = Cast<UClass>(ClassPin->DefaultObject);
 			if (!ComponentType)
 				continue;
@@ -85,7 +93,7 @@ void FSingularisCombineBlueprintCompileHook::HandleCDOCompiled(
 		}
 	}
 
-	// 4) 写入产物 CDO 的私有 DeclaredComponents（friend 授权）
+	// 4) 整体替换 CDO 私有声明（friend 授权），回填幂等：每次编译全量重建后赋值
 	USingularisCombine* StrategyCDO = Cast<USingularisCombine>(CDO);
 	if (!StrategyCDO)
 		return;
