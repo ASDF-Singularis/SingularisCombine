@@ -2,7 +2,6 @@
 
 #include <Templates/Casts.h>
 
-#include "Interfaces/SingularisCombineDependencyProvider.h"
 #include "Types/SingularisCombineDependencyRegistry.h"
 #include "Types/SingularisCombineDependencyScope.h"
 
@@ -12,7 +11,7 @@
  *
  * 展开：
  *   1) inline 访问器 Get[Name]() const，返回 [UClassType]*；
- *      直调注入的依赖查询提供者（查询能力下沉于提供者，策略不承载查询逻辑），未注入时返回 nullptr。
+ *      内部委托 GetDeclaredComponent(Scope, UClassType::StaticClass())，编译期类型校验，不可绕过。
  *   2) 静态注册器实例，模块加载期向全局注册表登记
  *      (StaticClass(), Scope, UClassType::StaticClass())。
  *
@@ -23,8 +22,7 @@
 #define SINGULARIS_DECLARE_DEPENDENCY(Scope, UClassType, Name) \
     UClassType* Get##Name() const \
     { \
-        const ISingularisCombineDependencyProvider* const Provider = DependencyProvider.Get(); \
-        return Provider ? Cast<UClassType>(Provider->GetDeclaredComponent(ESingularisCombineDependencyScope::Scope, UClassType::StaticClass())) : nullptr; \
+        return Cast<UClassType>(GetDeclaredComponent(ESingularisCombineDependencyScope::Scope, UClassType::StaticClass())); \
     } \
     struct F##Name##Registrar \
     { \

@@ -3,157 +3,51 @@
 #include <BlueprintActionDatabaseRegistrar.h>
 #include <BlueprintNodeSpawner.h>
 #include <EdGraphSchema_K2.h>
-#include <K2Node_CallFunction.h>
-#include <KismetCompiler.h>
 #include <EdGraph/EdGraph.h>
 #include <Kismet2/BlueprintEditorUtils.h>
 #include <Kismet2/CompilerResultsLog.h>
 
-#include "Components/SingularisCombineComponent.h"
 #include "Objects/SingularisCombineBase.h"
 
 #define LOCTEXT_NAMESPACE "K2Node_SingularisDeclareDependency"
+
+void UK2Node_SingularisDeclareDependency::PostInitProperties()
+{
+	Super::PostInitProperties();
+
+	// 新建路径：绑定早于基类 AllocateDefaultPins 生成引脚
+	EnsureFunctionBound();
+}
+
+void UK2Node_SingularisDeclareDependency::PostLoad()
+{
+	Super::PostLoad();
+
+	// 加载路径：序列化恢复后兜底绑定（正常资产已序列化函数引用，直接跳过）
+	EnsureFunctionBound();
+}
 
 void UK2Node_SingularisDeclareDependency::AllocateDefaultPins()
 {
 	Super::AllocateDefaultPins();
 
-	// 1) Scope 配置引脚（枚举）：未连接时直接在节点上选择，默认 Avatar
-	UEdGraphPin* ScopePin = CreatePin(
-		EGPD_Input,
-		UEdGraphSchema_K2::PC_Byte,
-		StaticEnum<ESingularisCombineDependencyScope>(),
-		GetScopePinName()
-	);
-	ScopePin->DefaultValue = StaticEnum<ESingularisCombineDependencyScope>()->GetNameStringByValue(
-		static_cast<int64>(ESingularisCombineDependencyScope::Avatar)
-	);
-
-	// 2) ComponentClass 配置引脚（类）：未连接时直接在节点上选择组件类
-	UEdGraphPin* ClassPin = CreatePin(
-		EGPD_Input,
-		UEdGraphSchema_K2::PC_Class,
-		UActorComponent::StaticClass(),
-		GetComponentClassPinName()
-	);
-	ClassPin->DefaultValue = UActorComponent::StaticClass()->GetName();
-
-	// 3) 隐藏 self 引脚：编译器自动连接蓝图 self 上下文，ExpandNode 迁移至提供者调用节点
-	UEdGraphPin* SelfPin = CreatePin(
-		EGPD_Input,
-		UEdGraphSchema_K2::PC_Object,
-		USingularisCombine::StaticClass(),
-		UEdGraphSchema_K2::PN_Self
-	);
-	SelfPin->bHidden = true;
-
-	// 4) 输出引脚：类型跟随组件类配置，初始以基类兜底
-	CreatePin(
-		EGPD_Output,
-		UEdGraphSchema_K2::PC_Object,
-		UActorComponent::StaticClass(),
-		UEdGraphSchema_K2::PN_ReturnValue
-	);
-	ConformOutputPinType();
-}
-
-void UK2Node_SingularisDeclareDependency::ExpandNode(FKismetCompilerContext& CompilerContext, UEdGraph* SourceGraph)
-{
-	Super::ExpandNode(CompilerContext, SourceGraph);
-
-	// 1) 校验配置引脚存在且已配置（未连接的引脚必须携带默认值）
-	UEdGraphPin* ScopePin = FindPin(GetScopePinName());
-	UEdGraphPin* ClassPin = FindPin(GetComponentClassPinName());
-	UClass* ComponentType = ClassPin ? Cast<UClass>(ClassPin->DefaultObject) : nullptr;
-	if (!ScopePin || !ClassPin)
-	{
-		CompilerContext.MessageLog.Error(TEXT("@0 缺少配置引脚"), this);
-		BreakAllNodeLinks();
-		return;
-	}
-	if (!ScopePin->LinkedTo.Num() && ScopePin->DefaultValue.IsEmpty())
-	{
-		CompilerContext.MessageLog.Error(TEXT("@0 的作用域未配置"), this);
-		BreakAllNodeLinks();
-		return;
-	}
-	if (!ClassPin->LinkedTo.Num() && !ComponentType)
-	{
-		CompilerContext.MessageLog.Error(TEXT("@0 的组件类未配置"), this);
-		BreakAllNodeLinks();
-		return;
-	}
-
-	// 2) 中间节点 1：策略 → 依赖提供者（GetDependencyProvider，internal 反射调用）
-	UK2Node_CallFunction* CallProvider = CompilerContext.SpawnIntermediateNode<UK2Node_CallFunction>(this, SourceGraph);
-	CallProvider->SetFromFunction(
-		USingularisCombine::StaticClass()->FindFunctionByName(FName(TEXT("GetDependencyProvider")))
-	);
-	CallProvider->AllocateDefaultPins();
-
-	// 3) 迁移 self 上下文：本节点隐藏 self 引脚 → 提供者调用节点 self 引脚
-	UEdGraphPin* NodeSelfPin = FindPin(UEdGraphSchema_K2::PN_Self);
-	UEdGraphPin* ProviderSelfPin = CallProvider->FindPinChecked(UEdGraphSchema_K2::PN_Self);
-	if (NodeSelfPin)
-		CompilerContext.MovePinLinksToIntermediate(*NodeSelfPin, *ProviderSelfPin);
-
-	// 4) 中间节点 2：组件 → 查询声明组件（GetDeclaredComponent，internal 反射调用）
-	UK2Node_CallFunction* CallGet = CompilerContext.SpawnIntermediateNode<UK2Node_CallFunction>(this, SourceGraph);
-	CallGet->SetFromFunction(
-		USingularisCombineComponent::StaticClass()->FindFunctionByName(FName(TEXT("GetDeclaredComponent")))
-	);
-	CallGet->AllocateDefaultPins();
-
-	// 5) 连接提供者输出 → 组件查询 self（类型均为 USingularisCombineComponent）
-	UEdGraphPin* ProviderOutPin = CallProvider->GetReturnValuePin();
-	UEdGraphPin* CallGetSelfPin = CallGet->FindPinChecked(UEdGraphSchema_K2::PN_Self);
-	ProviderOutPin->MakeLinkTo(CallGetSelfPin);
-
-	// 6) 写入参数字面量：连接则迁移动态值，未连接则拷贝配置默认值
-	UEdGraphPin* ScopeArg = CallGet->FindPinChecked(TEXT("Scope"));
-	if (ScopePin->LinkedTo.Num() > 0)
-		CompilerContext.MovePinLinksToIntermediate(*ScopePin, *ScopeArg);
-	else
-		ScopeArg->DefaultValue = ScopePin->DefaultValue;
-
-	UEdGraphPin* ClassArg = CallGet->FindPinChecked(TEXT("ComponentClass"));
-	if (ClassPin->LinkedTo.Num() > 0)
-		CompilerContext.MovePinLinksToIntermediate(*ClassPin, *ClassArg);
-	else
-		ClassArg->DefaultObject = ClassPin->DefaultObject;
-
-	// 7) 输出类型推导 + 链接迁移：以配置的组件类窄化调用节点返回类型，保持与本节点输出一致
-	UEdGraphPin* NodeOutPin = FindPinChecked(UEdGraphSchema_K2::PN_ReturnValue);
-	UEdGraphPin* CallOutPin = CallGet->GetReturnValuePin();
-	NodeOutPin->PinType.PinSubCategoryObject = ComponentType ? ComponentType : UActorComponent::StaticClass();
-	CallOutPin->PinType.PinSubCategoryObject = ComponentType ? ComponentType : UActorComponent::StaticClass();
-	CompilerContext.MovePinLinksToIntermediate(*NodeOutPin, *CallOutPin);
-
-	// 8) 断离本节点全部链接，编译期由中间节点接管
-	BreakAllNodeLinks();
+	// 隐藏 self 引脚：编译器自动连接蓝图 self 上下文，用户无需手动指定策略实例
+	if (UEdGraphPin* SelfPin = FindPin(UEdGraphSchema_K2::PN_Self))
+		SelfPin->bHidden = true;
 }
 
 void UK2Node_SingularisDeclareDependency::PostReconstructNode()
 {
 	Super::PostReconstructNode();
 
-	// 图结构变更重建引脚后，按组件类配置恢复输出类型
-	ConformOutputPinType();
-}
-
-void UK2Node_SingularisDeclareDependency::PinDefaultValueChanged(UEdGraphPin* Pin)
-{
-	Super::PinDefaultValueChanged(Pin);
-
-	// 组件类引脚在节点上被修改时，实时同步输出引脚类型
-	if (Pin && Pin->PinName == GetComponentClassPinName())
-		ConformOutputPinType();
+	// 蓝图类此刻必然可用：将 external 引用修正为 self 上下文（幂等：已为 self 上下文时自动跳过）
+	FunctionReference.RefreshGivenNewSelfScope<UFunction>(GetBlueprintClassFromNode());
 }
 
 FText UK2Node_SingularisDeclareDependency::GetNodeTitle(ENodeTitleType::Type TitleType) const
 {
-	UEdGraphPin* ScopePin = FindPin(GetScopePinName());
-	UEdGraphPin* ClassPin = FindPin(GetComponentClassPinName());
+	const UEdGraphPin* ScopePin = FindPin(GetScopePinName());
+	const UEdGraphPin* ClassPin = FindPin(GetComponentClassPinName());
 
 	// 配置引脚缺失或未就绪时回退为通用标题
 	const UClass* ComponentType = ClassPin ? Cast<UClass>(ClassPin->DefaultObject) : nullptr;
@@ -188,7 +82,7 @@ void UK2Node_SingularisDeclareDependency::ValidateNodeDuringCompilation(FCompile
 	Super::ValidateNodeDuringCompilation(MessageLog);
 
 	// 1) 宿主蓝图必须为 USingularisCombine 派生
-	UBlueprint* Blueprint = GetBlueprint();
+	const UBlueprint* Blueprint = GetBlueprint();
 	if (!Blueprint || !Blueprint->ParentClass || !Blueprint->ParentClass->IsChildOf(USingularisCombine::StaticClass()))
 		MessageLog.Error(TEXT("@0 必须位于 USingularisCombine 派生蓝图中"), this);
 
@@ -229,20 +123,21 @@ bool UK2Node_SingularisDeclareDependency::IsCompatibleWithGraph(const UEdGraph* 
 		return false;
 
 	// 仅允许放入 USingularisCombine 派生蓝图，声明目标必须存在
-	UBlueprint* Blueprint = FBlueprintEditorUtils::FindBlueprintForGraph(TargetGraph);
+	const UBlueprint* Blueprint = FBlueprintEditorUtils::FindBlueprintForGraph(TargetGraph);
 	return Blueprint && Blueprint->ParentClass && Blueprint->ParentClass->IsChildOf(USingularisCombine::StaticClass());
 }
 
-void UK2Node_SingularisDeclareDependency::ConformOutputPinType() const
+void UK2Node_SingularisDeclareDependency::EnsureFunctionBound()
 {
-	UEdGraphPin* ClassPin = FindPin(GetComponentClassPinName());
-	UEdGraphPin* OutPin = FindPin(UEdGraphSchema_K2::PN_ReturnValue);
-	if (!ClassPin || !OutPin)
+	if (!FunctionReference.GetMemberName().IsNone())
 		return;
 
-	// 未配置组件类时以基类兜底，保证输出引脚始终可连
-	UClass* ComponentType = Cast<UClass>(ClassPin->DefaultObject);
-	OutPin->PinType.PinSubCategoryObject = ComponentType ? ComponentType : UActorComponent::StaticClass();
+	// 降级原因：GetDeclaredComponent 为基类 protected 函数，GET_FUNCTION_NAME_CHECKED（取成员地址）受访问限制，
+	// 只能以 FName 字面量按名绑定 external 成员；PostReconstructNode 再修正为 self 上下文
+	FunctionReference.SetExternalMember(
+		FName(TEXT("GetDeclaredComponent")),
+		USingularisCombine::StaticClass()
+	);
 }
 
 #undef LOCTEXT_NAMESPACE

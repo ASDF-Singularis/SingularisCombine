@@ -14,7 +14,6 @@
 #include "SingularisCombineBase.generated.h"
 
 class UActorComponent;
-class USingularisCombineComponent;
 
 /**
  * 引力奇点抽象基类
@@ -67,6 +66,14 @@ public:
 		meta = (DisplayName = "IsActive")
 	)
 	bool IsActive() const { return bIsActive; }
+
+	/**
+	 * 归一声明依赖集合
+	 * 沿继承链查询全局注册表（原生声明宏写入），并合并自身 CDO 声明（蓝图回填）。
+	 * 每次调用读取最新注册表与 CDO 值，避免热重载后实例缓存过期；供 ResolveDependencies 聚合、AreDependenciesSatisfied 门控共用。
+	 */
+	virtual TMap<ESingularisCombineDependencyScope, FSingularisCombineDependencyList>
+	GetDeclaredComponentClasses() const;
 
 #pragma endregion
 
@@ -193,21 +200,28 @@ public:
 	 */
 	void SetDependencyProvider(ISingularisCombineDependencyProvider* Provider);
 
-	/**
-	 * 获取注入的依赖查询提供者（化合组件实例）
-	 * 仅供蓝图声明节点经反射调用；查询能力下沉于提供者自身，策略不承载查询逻辑。
-	 * @return 注入的化合组件，未注入时返回 nullptr
-	 */
-	UFUNCTION()
-	USingularisCombineComponent* GetDependencyProvider() const;
-
 #pragma endregion
 
 protected:
-#pragma region Internal Variable
+#pragma region State
 
-	/** 化合组件注入的依赖查询提供者（弱引用，随组件生命周期自动失效；宏访问器直调，不承载查询逻辑） */
-	TWeakInterfacePtr<ISingularisCombineDependencyProvider> DependencyProvider{};
+	/**
+	 * 获取声明式配置的组件实例（预缓存）
+	 * 仅宏生成的类型安全访问器与蓝图获取节点经反射调用。
+	 * 必须在化合组件 ResolveDependencies(Context) 之后调用。
+	 * @param Scope           依赖作用域（Instigator / Avatar / Target）
+	 * @param ComponentClass  声明在依赖集合中的组件类型
+	 * @return 预缓存的组件引用，未找到或未声明时返回 nullptr
+	 */
+	UFUNCTION(
+		BlueprintPure,
+		Category = "SingularisCombine|引力奇点化合|State",
+		meta = (DisplayName = "获取声明组件", DeterminesOutputType = "ComponentClass")
+	)
+	UActorComponent* GetDeclaredComponent(
+		ESingularisCombineDependencyScope Scope,
+		TSubclassOf<UActorComponent> ComponentClass
+	) const;
 
 #pragma endregion
 
@@ -217,9 +231,6 @@ private:
 	/** 友元：编辑器编译 hook 回填 CDO 声明 */
 	friend class FSingularisCombineBlueprintCompileHook;
 
-	/** 友元：化合组件归一声明集合时读取 CDO 声明 */
-	friend class USingularisCombineComponent;
-
 	/**
 	 * 声明式组件（收口）
 	 * 仅服务蓝图 CDO 回填路径与运行期内部读取；外部不可编辑、不可直接读写。
@@ -227,6 +238,9 @@ private:
 	 */
 	UPROPERTY()
 	TMap<ESingularisCombineDependencyScope, FSingularisCombineDependencyList> DeclaredComponents{};
+
+	/** 化合组件注入的依赖查询提供者（弱引用，随组件生命周期自动失效） */
+	TWeakInterfacePtr<ISingularisCombineDependencyProvider> DependencyProvider{};
 
 #pragma endregion
 };

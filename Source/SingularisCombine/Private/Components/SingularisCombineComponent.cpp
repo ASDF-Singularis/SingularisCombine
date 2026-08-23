@@ -5,43 +5,8 @@
 
 #include "Objects/SingularisCombineBase.h"
 #include "Types/SingularisCombineComponentType.h"
-#include "Types/SingularisCombineDependencyRegistry.h"
 #include "Types/SingularisCombineDependencyScope.h"
 #include "Types/SingularisCombineTransientPayload.h"
-
-TMap<ESingularisCombineDependencyScope, FSingularisCombineDependencyList>
-USingularisCombineComponent::CollectDeclaredComponentClasses(const USingularisCombine* Strategy)
-{
-	TMap<ESingularisCombineDependencyScope, FSingularisCombineDependencyList> Result;
-	if (!Strategy)
-		return Result;
-
-	// 1) 沿继承链聚合所有祖先的原生注册表声明（含自身）：子策略继承父策略的全部声明
-	for (UClass* Class = Strategy->GetClass(); Class; Class = Class->GetSuperClass())
-	{
-		if (const TMap<ESingularisCombineDependencyScope, FSingularisCombineDependencyList>* const Found =
-			FSingularisCombineDependencyRegistry::Get().FindDeclaredClasses(Class))
-		{
-			for (const auto& Pair : *Found)
-			{
-				for (const TSubclassOf<UActorComponent>& DepClass : Pair.Value.Classes)
-					Result.FindOrAdd(Pair.Key).Classes.AddUnique(DepClass);
-			}
-		}
-	}
-
-	// 2) 合并 CDO 声明（蓝图回填路径，friend 授权读取；读取 CDO 保证热重载后新鲜）
-	if (const USingularisCombine* const CDO = Strategy->GetClass()->GetDefaultObject<USingularisCombine>())
-	{
-		for (const auto& Pair : CDO->DeclaredComponents)
-		{
-			for (const TSubclassOf<UActorComponent>& DepClass : Pair.Value.Classes)
-				Result.FindOrAdd(Pair.Key).Classes.AddUnique(DepClass);
-		}
-	}
-
-	return Result;
-}
 
 USingularisCombineComponent::USingularisCombineComponent()
 {
@@ -160,7 +125,7 @@ void USingularisCombineComponent::ResolveDependencies(const FSingularisCombineCo
 		if (!Combine)
 			continue;
 
-		for (const auto& Pair : CollectDeclaredComponentClasses(Combine))
+		for (const auto& Pair : Combine->GetDeclaredComponentClasses())
 		{
 			TSet<TSubclassOf<UActorComponent>>& TypeSet = AggregatedDeps.FindOrAdd(Pair.Key);
 			for (const TSubclassOf<UActorComponent>& DepClass : Pair.Value.Classes)
@@ -225,7 +190,7 @@ bool USingularisCombineComponent::AreDependenciesSatisfied(
 		return true;
 
 	const TMap<ESingularisCombineDependencyScope, FSingularisCombineDependencyList>& Declared =
-		CollectDeclaredComponentClasses(Strategy);
+		Strategy->GetDeclaredComponentClasses();
 
 	// 1) 空声明视为无条件满足
 	if (Declared.IsEmpty())
