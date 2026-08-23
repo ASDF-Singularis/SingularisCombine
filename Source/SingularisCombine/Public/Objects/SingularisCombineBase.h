@@ -70,9 +70,9 @@ public:
 	/**
 	 * 归一声明依赖集合
 	 * 沿继承链查询全局注册表（原生声明宏写入），并合并自身 CDO 声明（蓝图回填）。
-	 * 结果惰性缓存于实例，运行期不可变；供 ResolveDependencies 聚合、AreDependenciesSatisfied 门控共用。
+	 * 每次调用读取最新注册表与 CDO 值，避免热重载后实例缓存过期；供 ResolveDependencies 聚合、AreDependenciesSatisfied 门控共用。
 	 */
-	virtual const TMap<ESingularisCombineDependencyScope, FSingularisCombineDependencyList>&
+	virtual TMap<ESingularisCombineDependencyScope, FSingularisCombineDependencyList>
 	GetDeclaredComponentClasses() const;
 
 #pragma endregion
@@ -238,12 +238,6 @@ private:
 	 */
 	UPROPERTY()
 	TMap<ESingularisCombineDependencyScope, FSingularisCombineDependencyList> DeclaredComponents{};
-
-	/** 声明集合惰性缓存（GetDeclaredComponentClasses 首次调用后填充，运行期不变） */
-	mutable TMap<ESingularisCombineDependencyScope, FSingularisCombineDependencyList> CachedDeclaredClasses{};
-
-	/** 缓存是否已构建 */
-	mutable bool bDeclaredClassesCached = false;
 
 	/** 化合组件注入的依赖查询提供者（弱引用，随组件生命周期自动失效） */
 	TWeakInterfacePtr<ISingularisCombineDependencyProvider> DependencyProvider{};

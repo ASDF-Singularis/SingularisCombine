@@ -50,6 +50,31 @@ void UK2Node_SingularisDeclareDependency::ValidateNodeDuringCompilation(FCompile
     {
         MessageLog.Error(TEXT("@0 的依赖名字未设置"), this);
     }
+
+    // 4) 检查同名声明冲突
+    if (Blueprint && !DependencyName.IsNone())
+    {
+        TArray<UEdGraph*> Graphs;
+        FBlueprintEditorUtils::GetAllGraphs(Blueprint, Graphs);
+
+        int32 MatchCount = 0;
+        for (const UEdGraph* Graph : Graphs)
+        {
+            if (!Graph)
+                continue;
+
+            TArray<UK2Node_SingularisDeclareDependency*> Siblings;
+            Graph->GetNodesOfClass<UK2Node_SingularisDeclareDependency>(Siblings);
+            for (const UK2Node_SingularisDeclareDependency* Sibling : Siblings)
+            {
+                if (Sibling && Sibling != this && Sibling->DependencyName == DependencyName)
+                    ++MatchCount;
+            }
+        }
+
+        if (MatchCount > 0)
+            MessageLog.Error(TEXT("@0 的依赖名字与其他声明节点冲突"), this);
+    }
 }
 
 void UK2Node_SingularisDeclareDependency::GetMenuActions(FBlueprintActionDatabaseRegistrar& ActionRegistrar) const

@@ -111,11 +111,10 @@ UActorComponent* USingularisCombine::GetDeclaredComponent(
 	return nullptr;
 }
 
-const TMap<ESingularisCombineDependencyScope, FSingularisCombineDependencyList>&
+TMap<ESingularisCombineDependencyScope, FSingularisCombineDependencyList>
 USingularisCombine::GetDeclaredComponentClasses() const
 {
-	if (bDeclaredClassesCached)
-		return CachedDeclaredClasses;
+	TMap<ESingularisCombineDependencyScope, FSingularisCombineDependencyList> Result;
 
 	// 1) 沿继承链聚合所有祖先的原生注册表声明（含自身）：子策略继承父策略的全部声明
 	for (UClass* Class = GetClass(); Class; Class = Class->GetSuperClass())
@@ -125,17 +124,19 @@ USingularisCombine::GetDeclaredComponentClasses() const
 		{
 			for (const auto& Pair : *Found)
 				for (const TSubclassOf<UActorComponent>& DepClass : Pair.Value.Classes)
-					CachedDeclaredClasses.FindOrAdd(Pair.Key).Classes.AddUnique(DepClass);
+					Result.FindOrAdd(Pair.Key).Classes.AddUnique(DepClass);
 		}
 	}
 
-	// 2) 合并自身 CDO 声明（蓝图回填路径）
-	for (const auto& Pair : DeclaredComponents)
-		for (const TSubclassOf<UActorComponent>& DepClass : Pair.Value.Classes)
-			CachedDeclaredClasses.FindOrAdd(Pair.Key).Classes.AddUnique(DepClass);
+	// 2) 合并 CDO 声明（蓝图回填路径，读取 CDO 保证热重载后新鲜）
+	if (const USingularisCombine* const CDO = GetClass()->GetDefaultObject<USingularisCombine>())
+	{
+		for (const auto& Pair : CDO->DeclaredComponents)
+			for (const TSubclassOf<UActorComponent>& DepClass : Pair.Value.Classes)
+				Result.FindOrAdd(Pair.Key).Classes.AddUnique(DepClass);
+	}
 
-	bDeclaredClassesCached = true;
-	return CachedDeclaredClasses;
+	return Result;
 }
 
 void USingularisCombine::SetDependencyProvider(ISingularisCombineDependencyProvider* Provider)

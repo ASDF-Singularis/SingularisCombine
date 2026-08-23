@@ -17,11 +17,25 @@
 void UK2Node_SingularisGetDeclaredComponent::AllocateDefaultPins()
 {
     Super::AllocateDefaultPins();
-    CreatePin(
+
+    // 隐藏 self 引脚：编译器自动连接到蓝图 self 上下文，ExpandNode 迁移至调用节点
+    UEdGraphPin* SelfPin = CreatePin(
+        EGPD_Input,
+        UEdGraphSchema_K2::PC_Object,
+        USingularisCombine::StaticClass(),
+        UEdGraphSchema_K2::PN_Self);
+    SelfPin->bHidden = true;
+
+    UEdGraphPin* OutPin = CreatePin(
         EGPD_Output,
         UEdGraphSchema_K2::PC_Object,
         UActorComponent::StaticClass(),
         UEdGraphSchema_K2::PN_ReturnValue);
+
+    // 编辑期类型推导：若已存在匹配声明，将输出引脚窄化为声明的组件类
+    if (const UK2Node_SingularisDeclareDependency* Declaration = FindMatchingDeclaration())
+        if (Declaration->ComponentClass)
+            OutPin->PinType.PinSubCategoryObject = Declaration->ComponentClass;
 }
 
 const UK2Node_SingularisDeclareDependency* UK2Node_SingularisGetDeclaredComponent::FindMatchingDeclaration() const
@@ -93,8 +107,8 @@ void UK2Node_SingularisGetDeclaredComponent::ExpandNode(FKismetCompilerContext& 
     // Target = self（策略实例）：迁移本节点 self 引脚连接到调用节点
     UEdGraphPin* NodeSelfPin = FindPin(UEdGraphSchema_K2::PN_Self);
     UEdGraphPin* CallSelfPin = CallGet->FindPinChecked(UEdGraphSchema_K2::PN_Self);
-    if (NodeSelfPin && NodeSelfPin->LinkedTo.Num() > 0)
-        CallSelfPin->MakeLinkTo(NodeSelfPin->LinkedTo[0]);
+    if (NodeSelfPin)
+        CompilerContext.MovePinLinksToIntermediate(*NodeSelfPin, *CallSelfPin);
 
     // Scope 字面量
     if (UEdGraphPin* ScopeArg = CallGet->FindPinChecked(TEXT("Scope")))
@@ -111,6 +125,7 @@ void UK2Node_SingularisGetDeclaredComponent::ExpandNode(FKismetCompilerContext& 
     UEdGraphPin* NodeOutPin = FindPinChecked(UEdGraphSchema_K2::PN_ReturnValue);
     UEdGraphPin* CallOutPin = CallGet->GetReturnValuePin();
     NodeOutPin->PinType.PinSubCategoryObject = Declaration->ComponentClass;
+    CallOutPin->PinType.PinSubCategoryObject = Declaration->ComponentClass;
     CompilerContext.MovePinLinksToIntermediate(*NodeOutPin, *CallOutPin);
 
     BreakAllNodeLinks();
