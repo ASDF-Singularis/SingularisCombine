@@ -22,7 +22,7 @@
         },
         {
             "Name": "SingularisCombineEditor",
-            "Type": "Editor",
+            "Type": "UncookedOnly",
             "LoadingPhase": "Default"
         }
     ]
