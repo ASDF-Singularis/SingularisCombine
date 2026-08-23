@@ -166,25 +166,6 @@ public:
 	const TArray<FName>& GetNativeBlackboardTags() const { return NativeBlackboardTags; }
 
 	/**
-	 * 预解析管线中所有策略声明式配置的组件
-	 * 收集所有策略声明的依赖并集，将每个作用域映射到 Context 中的 Actor，
-	 * 按声明类型查找并缓存到对应作用域槽位。
-	 * 必须在策略评估前调用；策略通过 GetDeclaredComponent 读取缓存。
-	 * @param Context  化合上下文，提供 Instigator/Avatar/Target 三个 Actor
-	 */
-	void ResolveDependencies(const FSingularisCombineContext& Context);
-
-	/**
-	 * 查询指定策略类声明式配置的组件类型集合
-	 * 沿继承链聚合所有祖先注册表声明（含自身），合并子策略继承父策略的全部声明。
-	 * 注册表为唯一真相源，原生路径与蓝图路径统一经由编译 hook 写入。
-	 * @param StrategyClass  策略类
-	 * @return 按作用域分组的声明组件类型列表
-	 */
-	static TMap<ESingularisCombineDependencyScope, FSingularisCombineDependencyList>
-	GetDeclaredComponentClasses(UClass* StrategyClass);
-
-	/**
 	 * 查询预缓存的声明式组件
 	 * BlueprintPure + DeterminesOutputType：声明节点的输出引脚类型随 ComponentClass 自动推导。
 	 * 必须在 ResolveDependencies(Context) 之后调用。
@@ -201,15 +182,6 @@ public:
 		ESingularisCombineDependencyScope Scope,
 		TSubclassOf<UActorComponent> ComponentClass
 	) const;
-
-	/**
-	 * 检查策略声明的依赖是否全部满足
-	 * 空声明返回 true（无条件满足）；任一声明缺失返回 false
-	 * @param Strategy  目标策略
-	 * @param Context   化合上下文，用于将作用域映射到 Actor
-	 * @return 声明依赖是否全部命中缓存
-	 */
-	bool AreDependenciesSatisfied(const USingularisCombine* Strategy, const FSingularisCombineContext& Context) const;
 
 #pragma endregion
 
@@ -288,6 +260,33 @@ public:
 
 private:
 #pragma region Internal Function
+
+	/**
+	* 预解析管线中所有策略声明式配置的组件
+	* 收集所有策略声明的依赖并集，将每个作用域映射到 Context 中的 Actor，
+	 * 按声明类型查找并缓存到对应作用域槽位。
+	 * 必须在策略评估前调用；策略通过 GetDeclaredComponent 读取缓存。
+	*/
+	void ResolveDependencies();
+
+	/**
+	 * 查询指定策略类声明式配置的组件类型集合
+	 * 沿继承链聚合所有祖先注册表声明（含自身），合并子策略继承父策略的全部声明。
+	 * 注册表为唯一真相源，原生路径与蓝图路径统一经由编译 hook 写入。
+	 * @param StrategyClass  策略类
+	 * @return 按作用域分组的声明组件类型列表
+	 */
+	static TMap<ESingularisCombineDependencyScope, FSingularisCombineDependencyList>
+	GetDeclaredComponentClasses(const UClass* StrategyClass);
+
+	/**
+	* 检查策略声明的依赖是否全部满足
+	* 空声明返回 true（无条件满足）；任一声明缺失返回 false
+	* @param Strategy  目标策略
+	 * @param Context   化合上下文，用于将作用域映射到 Actor
+	 * @return 声明依赖是否全部命中缓存
+	 */
+	bool AreDependenciesSatisfied(const USingularisCombine* Strategy, const FSingularisCombineContext& Context) const;
 
 	/** 收集同 Actor 下所有 GameplayTags 及原生 FName 标签 */
 	void CollectAllTags();
