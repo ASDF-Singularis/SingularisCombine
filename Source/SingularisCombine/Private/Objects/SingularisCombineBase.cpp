@@ -4,8 +4,6 @@
 #include <GameFramework/Actor.h>
 #include <Net/UnrealNetwork.h>
 
-#include "Interfaces/SingularisCombineDependencyProvider.h"
-#include "Types/SingularisCombineDependencyRegistry.h"
 #include "Types/SingularisCombineTransientPayload.h"
 
 UWorld* USingularisCombine::GetWorld() const
@@ -95,55 +93,3 @@ void USingularisCombine::SustainReaction_Implementation(
 ) {}
 
 void USingularisCombine::OnRep_IsActive_Implementation() const {}
-
-UActorComponent* USingularisCombine::GetDeclaredComponent(
-	const ESingularisCombineDependencyScope Scope,
-	const TSubclassOf<UActorComponent> ComponentClass
-) const
-{
-	if (!ComponentClass)
-		return nullptr;
-
-	// 1) 委托注入的依赖查询提供者
-	if (const ISingularisCombineDependencyProvider* const Provider = DependencyProvider.Get())
-		return Provider->GetDeclaredComponent(Scope, ComponentClass);
-
-	return nullptr;
-}
-
-TMap<ESingularisCombineDependencyScope, FSingularisCombineDependencyList>
-USingularisCombine::GetDeclaredComponentClasses() const
-{
-	TMap<ESingularisCombineDependencyScope, FSingularisCombineDependencyList> Result;
-
-	// 1) 沿继承链聚合所有祖先的原生注册表声明（含自身）：子策略继承父策略的全部声明
-	for (UClass* Class = GetClass(); Class; Class = Class->GetSuperClass())
-	{
-		if (const TMap<ESingularisCombineDependencyScope, FSingularisCombineDependencyList>* const Found =
-			FSingularisCombineDependencyRegistry::Get().FindDeclaredClasses(Class))
-		{
-			for (const auto& Pair : *Found)
-			{
-				for (const TSubclassOf<UActorComponent>& DepClass : Pair.Value.Classes)
-					Result.FindOrAdd(Pair.Key).Classes.AddUnique(DepClass);
-			}
-		}
-	}
-
-	// 2) 合并 CDO 声明（蓝图回填路径，读取 CDO 保证热重载后新鲜）
-	if (const USingularisCombine* const CDO = GetClass()->GetDefaultObject<USingularisCombine>())
-	{
-		for (const auto& Pair : CDO->DeclaredComponents)
-		{
-			for (const TSubclassOf<UActorComponent>& DepClass : Pair.Value.Classes)
-				Result.FindOrAdd(Pair.Key).Classes.AddUnique(DepClass);
-		}
-	}
-
-	return Result;
-}
-
-void USingularisCombine::SetDependencyProvider(ISingularisCombineDependencyProvider* Provider)
-{
-	DependencyProvider = Provider;
-}

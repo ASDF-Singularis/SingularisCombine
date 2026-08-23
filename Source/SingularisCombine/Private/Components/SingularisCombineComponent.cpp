@@ -5,6 +5,7 @@
 
 #include "Objects/SingularisCombineBase.h"
 #include "Types/SingularisCombineComponentType.h"
+#include "Types/SingularisCombineDependencyRegistry.h"
 #include "Types/SingularisCombineDependencyScope.h"
 #include "Types/SingularisCombineTransientPayload.h"
 
@@ -31,10 +32,7 @@ void USingularisCombineComponent::BeginPlay()
 	if (GetOwner() && GetOwner()->HasAuthority())
 		RegisterCombineSubObjects();
 
-	// 2) 将本组件注入为管线策略的依赖查询提供者
-	BindDependencyProvider();
-
-	// 3) 启动周期性评估定时器：兜底检测组件移除与标签变更
+	// 2) 启动周期性评估定时器：兜底检测组件移除与标签变更
 	if (AutoEvaluateInterval > 0.0f)
 	{
 		World->GetTimerManager().SetTimer(
@@ -45,7 +43,7 @@ void USingularisCombineComponent::BeginPlay()
 		);
 	}
 
-	// 4) 初始评估：收集标签并（服务端）执行管线
+	// 3) 初始评估：收集标签并（服务端）执行管线
 	EvaluatePipeline();
 }
 
@@ -125,7 +123,7 @@ void USingularisCombineComponent::ResolveDependencies(const FSingularisCombineCo
 		if (!Combine)
 			continue;
 
-		for (const auto& Pair : Combine->GetDeclaredComponentClasses())
+		for (const auto& Pair : GetDeclaredComponentClasses(Combine->GetClass()))
 		{
 			TSet<TSubclassOf<UActorComponent>>& TypeSet = AggregatedDeps.FindOrAdd(Pair.Key);
 			for (const TSubclassOf<UActorComponent>& DepClass : Pair.Value.Classes)
@@ -155,6 +153,28 @@ void USingularisCombineComponent::ResolveDependencies(const FSingularisCombineCo
 				ScopeCache.Add(DepClass, Found);
 		}
 	}
+}
+
+TMap<ESingularisCombineDependencyScope, FSingularisCombineDependencyList>
+USingularisCombineComponent::GetDeclaredComponentClasses(UClass* StrategyClass)
+{
+	TMap<ESingularisCombineDependencyScope, FSingularisCombineDependencyList> Result;
+
+	// 1) 沿继承链聚合所有祖先的注册表声明（含自身）：子策略继承父策略的全部声明
+	for (UClass* Class = StrategyClass; Class; Class = Class->GetSuperClass())
+	{
+		if (const TMap<ESingularisCombineDependencyScope, FSingularisCombineDependencyList>* const Found =
+			FSingularisCombineDependencyRegistry::Get().FindDeclaredClasses(Class))
+		{
+			for (const auto& Pair : *Found)
+			{
+				for (const TSubclassOf<UActorComponent>& DepClass : Pair.Value.Classes)
+					Result.FindOrAdd(Pair.Key).Classes.AddUnique(DepClass);
+			}
+		}
+	}
+
+	return Result;
 }
 
 UActorComponent* USingularisCombineComponent::GetDeclaredComponent(
@@ -190,7 +210,7 @@ bool USingularisCombineComponent::AreDependenciesSatisfied(
 		return true;
 
 	const TMap<ESingularisCombineDependencyScope, FSingularisCombineDependencyList>& Declared =
-		Strategy->GetDeclaredComponentClasses();
+		GetDeclaredComponentClasses(Strategy->GetClass());
 
 	// 1) 空声明视为无条件满足
 	if (Declared.IsEmpty())
@@ -227,6 +247,16 @@ bool USingularisCombineComponent::AreDependenciesSatisfied(
 	return true;
 }
 
+USingularisCombineComponent* USingularisCombineComponent::GetFromStrategy(const USingularisCombine* Strategy)
+{
+	// 1) CDO 与空值保护：CDO 的 Outer 为其 UClass，非组件实例
+	if (!Strategy || Strategy->HasAnyFlags(RF_ClassDefaultObject))
+		return nullptr;
+
+	// 2) 策略作为 UObject 子对象挂载于组件，Outer 即为化合组件
+	return Cast<USingularisCombineComponent>(Strategy->GetOuter());
+}
+
 void USingularisCombineComponent::SetPipeline(const FSingularisCombinePipeline& InPipeline)
 {
 	// 1) 回滚当前管线中所有已激活策略的状态
@@ -255,7 +285,6 @@ void USingularisCombineComponent::SetPipeline(const FSingularisCombinePipeline& 
 
 	// 2) 替换管线并立即重估
 	CombinePipeline = InPipeline;
-	BindDependencyProvider();
 	EvaluatePipeline();
 }
 
@@ -267,7 +296,6 @@ void USingularisCombineComponent::ClearPipeline()
 void USingularisCombineComponent::AddCombineEntry(const FSingularisCombineEntry& Entry)
 {
 	CombinePipeline.Combines.Add(Entry);
-	BindDependencyProvider();
 	EvaluatePipeline();
 }
 
@@ -448,16 +476,6 @@ void USingularisCombineComponent::OnOwnerChildComponentConstructed(UObject* Obje
 		0.0f,
 		false
 	);
-}
-
-void USingularisCombineComponent::BindDependencyProvider()
-{
-	// 1) 将本组件注入为管线中所有策略的依赖查询提供者
-	for (const FSingularisCombineEntry& Entry : CombinePipeline.Combines)
-	{
-		if (USingularisCombine* const Combine = Entry.Combine)
-			Combine->SetDependencyProvider(this);
-	}
 }
 
 AActor* USingularisCombineComponent::GetContextActor(

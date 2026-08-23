@@ -4,16 +4,13 @@
 #include <GameplayTagContainer.h>
 #include <Templates/Casts.h>
 #include <UObject/Object.h>
-#include <UObject/WeakInterfacePtr.h>
 
-#include "Interfaces/SingularisCombineDependencyProvider.h"
-#include "Types/SingularisCombineDependencyList.h"
-#include "Types/SingularisCombineDependencyScope.h"
 #include "Types/SingularisCombineTransientPayload.h"
 #include "Types/SingularisCombineType.h"
 #include "SingularisCombineBase.generated.h"
 
 class UActorComponent;
+class USingularisCombineComponent;
 
 /**
  * 引力奇点抽象基类
@@ -23,6 +20,7 @@ class UActorComponent;
  *
  * 作为 UObject 子对象挂载于 USingularisCombineComponent，
  * 通过 AddReplicatedSubObject 注册至组件级复制列表，bIsActive 属性的变更将同步至所有客户端。
+ * 声明式依赖的登记、查询、缓存由 USingularisCombineComponent 全权负责，策略类不知晓其存在（依赖倒置）。
  */
 UCLASS(Abstract, Blueprintable, EditInlineNew, CollapseCategories)
 class SINGULARISCOMBINE_API USingularisCombine : public UObject
@@ -67,14 +65,6 @@ public:
 	)
 	bool IsActive() const { return bIsActive; }
 
-	/**
-	 * 归一声明依赖集合
-	 * 沿继承链查询全局注册表（原生声明宏写入），并合并自身 CDO 声明（蓝图回填）。
-	 * 每次调用读取最新注册表与 CDO 值，避免热重载后实例缓存过期；供 ResolveDependencies 聚合、AreDependenciesSatisfied 门控共用。
-	 */
-	virtual TMap<ESingularisCombineDependencyScope, FSingularisCombineDependencyList>
-	GetDeclaredComponentClasses() const;
-
 #pragma endregion
 
 #pragma region API
@@ -83,7 +73,7 @@ public:
 	UFUNCTION(
 		BlueprintCallable,
 		Category = "SingularisCombine|引力奇点化合|API",
-		meta = (DisplayName = "[Name]")
+		meta = (DisplayName = "SetActive")
 	)
 	void SetActive(const bool bNewActive) { bIsActive = bNewActive; }
 
@@ -97,8 +87,8 @@ public:
 	 * 两者互不干扰，策略按需择一或组合判定。
 	 * @param Context                  化合上下文，内含 Instigator / Avatar / Target 等场景引用
 	 * @param Payload                  事件驱动评估载荷（周期轮询时为空，TriggerEvaluate 触发时填充）
-	 * @param BlackboardGameplayTags  当前全局黑板的 GameplayTags 快照
-	 * @param BlackboardNativeTags      当前全局收集的 FName 原生标签快照（Actor.Tags + Component.ComponentTags）
+	 * @param BlackboardGameplayTags   当前全局黑板的 GameplayTags 快照
+	 * @param BlackboardNativeTags     当前全局收集的 FName 原生标签快照（Actor.Tags + Component.ComponentTags）
 	 * @return 标签组合是否满足本策略的化合方程式
 	 */
 	UFUNCTION(
@@ -116,9 +106,9 @@ public:
 
 	/**
 	 * 执行化合正向反应
-	 * @param Context         化合上下文，内含 Instigator / Avatar / Target 等场景引用
-	 * @param Payload         事件驱动评估载荷（周期轮询时为空，TriggerEvaluate 触发时填充）
-	 * @param BlackboardGameplayTags  当前全局黑板的 GameplayTags 快照
+	 * @param Context                  化合上下文，内含 Instigator / Avatar / Target 等场景引用
+	 * @param Payload                  事件驱动评估载荷（周期轮询时为空，TriggerEvaluate 触发时填充）
+	 * @param BlackboardGameplayTags    当前全局黑板的 GameplayTags 快照
 	 * @param BlackboardNativeTags      当前全局收集的 FName 原生标签快照
 	 */
 	UFUNCTION(
@@ -187,60 +177,6 @@ public:
 		meta = (DisplayName = "OnRep_IsActive")
 	)
 	void OnRep_IsActive() const;
-
-#pragma endregion
-
-#pragma region Dependency Injection
-
-	/**
-	 * 注入依赖查询提供者
-	 * 由化合组件在注册/替换管线时调用，将自身注入为策略的依赖查询入口，
-	 * 解除策略对具体组件类的直接引用（依赖倒置）。
-	 * @param Provider  依赖查询提供者（通常为挂载本策略的化合组件）
-	 */
-	void SetDependencyProvider(ISingularisCombineDependencyProvider* Provider);
-
-#pragma endregion
-
-protected:
-#pragma region State
-
-	/**
-	 * 获取声明式配置的组件实例（预缓存）
-	 * 仅宏生成的类型安全访问器与蓝图获取节点经反射调用。
-	 * 必须在化合组件 ResolveDependencies(Context) 之后调用。
-	 * @param Scope           依赖作用域（Instigator / Avatar / Target）
-	 * @param ComponentClass  声明在依赖集合中的组件类型
-	 * @return 预缓存的组件引用，未找到或未声明时返回 nullptr
-	 */
-	UFUNCTION(
-		BlueprintPure,
-		Category = "SingularisCombine|引力奇点化合|State",
-		meta = (DisplayName = "获取声明组件", DeterminesOutputType = "ComponentClass")
-	)
-	UActorComponent* GetDeclaredComponent(
-		ESingularisCombineDependencyScope Scope,
-		TSubclassOf<UActorComponent> ComponentClass
-	) const;
-
-#pragma endregion
-
-private:
-#pragma region Internal Variable
-
-	/** 友元：编辑器编译 hook 回填 CDO 声明 */
-	friend class FSingularisCombineBlueprintCompileHook;
-
-	/**
-	 * 声明式组件（收口）
-	 * 仅服务蓝图 CDO 回填路径与运行期内部读取；外部不可编辑、不可直接读写。
-	 * 原生路径下注册表为唯一真相源，本字段闲置。
-	 */
-	UPROPERTY()
-	TMap<ESingularisCombineDependencyScope, FSingularisCombineDependencyList> DeclaredComponents{};
-
-	/** 化合组件注入的依赖查询提供者（弱引用，随组件生命周期自动失效） */
-	TWeakInterfacePtr<ISingularisCombineDependencyProvider> DependencyProvider{};
 
 #pragma endregion
 };

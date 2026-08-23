@@ -9,7 +9,7 @@ class UActorComponent;
 /**
  * 引力奇点化合依赖组件列表
  * 包装单个作用域（Instigator/Avatar/Target）下声明的依赖组件类型数组。
- * 作为 DeclaredComponents TMap 的值类型，绕过 UHT 不支持 TMap<K, TArray<TSubclassOf<UObject>>> 作为反射 UPROPERTY 的限制。
+ * 作为依赖注册表 TMap 的值类型，供原生宏与蓝图编译 hook 共用同一真相源。
  */
 USTRUCT(BlueprintType)
 struct SINGULARISCOMBINE_API FSingularisCombineDependencyList

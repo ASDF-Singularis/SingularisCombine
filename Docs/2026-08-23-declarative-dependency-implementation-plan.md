@@ -1,5 +1,7 @@
 # SingularisCombine 声明式依赖注入 Implementation Plan
 
+> **历史文档注记（2026-08-23）：** 本实施计划描述了重构前期的原始方案——以 `DeclaredComponents` CDO 字段 + `GetDeclaredComponentClasses()` 虚函数 + `friend` 友元回填为核心。后续审查发现该方案存在 friend 反模式与策略类职责不纯问题，已重构为「声明、查询、缓存全部收口于化合组件」的最终形态。本计划保留作为历史参考，但**请勿按本计划执行**——最新实现以 `DESIGN.md` 与源码为准。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 将 `SingularisCombine` 的依赖注入重构为「声明即逻辑、实例即状态」的声明式模型，原生路径走全局静态注册表 + 类型安全宏访问器，蓝图路径走纯 K2Node + 编译期 CDO 回填，并以 `GetDeclaredComponentClasses()` 虚函数归一声明源。

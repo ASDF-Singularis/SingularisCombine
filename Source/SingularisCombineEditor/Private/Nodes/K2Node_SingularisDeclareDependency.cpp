@@ -9,6 +9,7 @@
 #include <Kismet2/BlueprintEditorUtils.h>
 #include <Kismet2/CompilerResultsLog.h>
 
+#include "Components/SingularisCombineComponent.h"
 #include "Objects/SingularisCombineBase.h"
 #include "Styles/SingularisCombineEditorStyle.h"
 
@@ -84,42 +85,64 @@ void UK2Node_SingularisDeclareDependency::ExpandNode(FKismetCompilerContext& Com
 		return;
 	}
 
-	// 2) 生成中间调用节点并绑定目标函数
-	UK2Node_CallFunction* CallGet = CompilerContext.SpawnIntermediateNode<UK2Node_CallFunction>(this, SourceGraph);
-	// 降级原因：GetDeclaredComponent 为基类 protected 函数，GET_FUNCTION_NAME_CHECKED（取成员地址）受访问限制，
-	// 只能按名经反射解析；SetFromFunction 依据 BlueprintPure 元数据自动置为纯节点并解析为 self 上下文调用
-	CallGet->SetFromFunction(
-		USingularisCombine::StaticClass()->FindFunctionByName(FName(TEXT("GetDeclaredComponent")))
+	// 2) 第一步调用：GetFromStrategy(self) → 输出化合组件引用
+	//    静态工厂方法为 BlueprintPure，目标函数为 public UFUNCTION，可使用标准反射取函数名
+	UK2Node_CallFunction* CallGetFromStrategy = CompilerContext.SpawnIntermediateNode<UK2Node_CallFunction>(
+		this,
+		SourceGraph
 	);
-	CallGet->AllocateDefaultPins();
+	CallGetFromStrategy->SetFromFunction(
+		USingularisCombineComponent::StaticClass()->FindFunctionByName(
+			GET_FUNCTION_NAME_CHECKED(USingularisCombineComponent, GetFromStrategy)
+		)
+	);
+	CallGetFromStrategy->AllocateDefaultPins();
 
-	// 3) 迁移 self 上下文：本节点隐藏 self 引脚 → 调用节点 self 引脚
+	// 3) 迁移 self 上下文：本节点隐藏 self 引脚 → GetFromStrategy 入参「Strategy」
 	UEdGraphPin* NodeSelfPin = FindPin(UEdGraphSchema_K2::PN_Self);
-	UEdGraphPin* CallSelfPin = CallGet->FindPinChecked(UEdGraphSchema_K2::PN_Self);
+	UEdGraphPin* StrategyArgPin = CallGetFromStrategy->FindPinChecked(TEXT("Strategy"));
 	if (NodeSelfPin)
-		CompilerContext.MovePinLinksToIntermediate(*NodeSelfPin, *CallSelfPin);
+		CompilerContext.MovePinLinksToIntermediate(*NodeSelfPin, *StrategyArgPin);
 
-	// 4) 写入参数字面量：连接则迁移动态值，未连接则拷贝配置默认值
-	UEdGraphPin* ScopeArg = CallGet->FindPinChecked(TEXT("Scope"));
+	UEdGraphPin* ComponentOutPin = CallGetFromStrategy->GetReturnValuePin();
+
+	// 4) 第二步调用：GetDeclaredComponent(Scope, Class) on ComponentOut → 输出组件引用
+	UK2Node_CallFunction* CallGetDeclared = CompilerContext.SpawnIntermediateNode<UK2Node_CallFunction>(
+		this,
+		SourceGraph
+	);
+	CallGetDeclared->SetFromFunction(
+		USingularisCombineComponent::StaticClass()->FindFunctionByName(
+			GET_FUNCTION_NAME_CHECKED(USingularisCombineComponent, GetDeclaredComponent)
+		)
+	);
+	CallGetDeclared->AllocateDefaultPins();
+
+	// 5) self 链路：第一步输出的 Component 连接到第二步的 self 引脚
+	UEdGraphPin* GetDeclaredSelfPin = CallGetDeclared->FindPinChecked(UEdGraphSchema_K2::PN_Self);
+	GetDeclaredSelfPin->MakeLinkTo(ComponentOutPin);
+
+	// 6) 写入参数字面量：连接则迁移动态值，未连接则拷贝配置默认值
+	UEdGraphPin* ScopeArg = CallGetDeclared->FindPinChecked(TEXT("Scope"));
 	if (ScopePin->LinkedTo.Num() > 0)
 		CompilerContext.MovePinLinksToIntermediate(*ScopePin, *ScopeArg);
 	else
 		ScopeArg->DefaultValue = ScopePin->DefaultValue;
 
-	UEdGraphPin* ClassArg = CallGet->FindPinChecked(TEXT("ComponentClass"));
+	UEdGraphPin* ClassArg = CallGetDeclared->FindPinChecked(TEXT("ComponentClass"));
 	if (ClassPin->LinkedTo.Num() > 0)
 		CompilerContext.MovePinLinksToIntermediate(*ClassPin, *ClassArg);
 	else
 		ClassArg->DefaultObject = ClassPin->DefaultObject;
 
-	// 5) 输出类型推导 + 链接迁移：以配置的组件类窄化调用节点返回类型，保持与本节点输出一致
+	// 7) 输出类型推导 + 链接迁移：以配置的组件类窄化调用节点返回类型，保持与本节点输出一致
 	UEdGraphPin* NodeOutPin = FindPinChecked(UEdGraphSchema_K2::PN_ReturnValue);
-	UEdGraphPin* CallOutPin = CallGet->GetReturnValuePin();
+	UEdGraphPin* CallOutPin = CallGetDeclared->GetReturnValuePin();
 	NodeOutPin->PinType.PinSubCategoryObject = ComponentType ? ComponentType : UActorComponent::StaticClass();
 	CallOutPin->PinType.PinSubCategoryObject = ComponentType ? ComponentType : UActorComponent::StaticClass();
 	CompilerContext.MovePinLinksToIntermediate(*NodeOutPin, *CallOutPin);
 
-	// 6) 断离本节点全部链接，编译期由中间节点接管
+	// 8) 断离本节点全部链接，编译期由中间节点接管
 	BreakAllNodeLinks();
 }
 

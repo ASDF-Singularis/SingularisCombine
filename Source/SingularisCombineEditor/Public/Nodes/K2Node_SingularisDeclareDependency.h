@@ -12,8 +12,9 @@ class UActorComponent;
  * 声明依赖 K2Node（声明与获取一体）
  * 声明即使用：作用域与组件类为节点输入引脚（未连接时直接在节点上选择），输出引脚直接输出组件引用，
  * 输出类型由组件类配置实时推导，无跨节点绑定环节。
- * 编译期 hook 扫描本节点按 (Scope, Class) 去重写入 CDO；ExpandNode 展开为对
- * USingularisCombine::GetDeclaredComponent(Scope, Class) 的纯函数调用。
+ * 编译期 hook 扫描本节点按 (Scope, Class) 去重写入全局依赖注册表（唯一真相源）；
+ * ExpandNode 展开为两步调用链：USingularisCombineComponent::GetFromStrategy(self) →
+ * USingularisCombineComponent::GetDeclaredComponent(Scope, Class)。
  */
 UCLASS()
 class UK2Node_SingularisDeclareDependency : public UK2Node
@@ -31,7 +32,9 @@ public:
 	virtual void AllocateDefaultPins() override;
 
 	/**
-	 * 编译展开：替换为对 GetDeclaredComponent(Scope, Class) 的中间调用节点并迁移链接
+	 * 编译展开：生成两步调用链并迁移链接
+	 * 1) USingularisCombineComponent::GetFromStrategy(self) → 输出化合组件
+	 * 2) USingularisCombineComponent::GetDeclaredComponent(Scope, Class) → 输出组件引用
 	 * @param CompilerContext  当前编译上下文，用于生成中间节点与迁移引脚
 	 * @param SourceGraph      本节点所在图，中间节点挂载于此
 	 */
@@ -54,7 +57,7 @@ public:
 
 	/** 标题栏文本着色 */
 	virtual FLinearColor GetNodeTitleTextColor() const override;
-	
+
 	/** 节点图标：复用插件 Resources/Icon128.png（注册于 FSingularisCombineEditorStyle） */
 	virtual FSlateIcon GetIconAndTint(FLinearColor& OutColor) const override;
 
