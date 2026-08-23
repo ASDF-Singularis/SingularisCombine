@@ -14,15 +14,15 @@ public class SingularisCombineEditor : ModuleRules
 
 				"SingularisCombine",
 
+				"BlueprintGraph",
+				"KismetCompiler",
+				"Kismet",
+
 				"UMG",
 				"UMGEditor",
 				"UnrealEd",
 				"AssetTools",
-				"ContentBrowser",
-
-				"BlueprintGraph",
-				"KismetCompiler",
-				"Kismet"
+				"ContentBrowser"
 			]
 		);
 	}
