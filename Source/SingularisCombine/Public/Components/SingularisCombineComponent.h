@@ -7,6 +7,7 @@
 
 #include "Interfaces/SingularisCombineDependencyProvider.h"
 #include "Types/SingularisCombineComponentType.h"
+#include "Types/SingularisCombineDependencyList.h"
 #include "Types/SingularisCombineDependencyScope.h"
 #include "Types/SingularisCombineTransientPayload.h"
 #include "SingularisCombineComponent.generated.h"
@@ -122,6 +123,15 @@ private:
 	CachedDependencies
 		{};
 
+	/**
+	 * 归一声明依赖集合：沿继承链聚合注册表 + 合并策略 CDO 声明
+	 * 声明集合 == 门控集合 == 可查询集合的唯一真源，供 ResolveDependencies 聚合与 AreDependenciesSatisfied 门控共用。
+	 * @param Strategy  目标策略
+	 * @return 归并去重后的声明集合
+	 */
+	static TMap<ESingularisCombineDependencyScope, FSingularisCombineDependencyList>
+	CollectDeclaredComponentClasses(const USingularisCombine* Strategy);
+
 #pragma endregion
 
 public:
@@ -175,10 +185,17 @@ public:
 
 	/**
 	 * 查询预缓存的声明式组件
+	 * 仅供蓝图声明节点经反射调用（internal 隐藏，不可被用户直接拖出）；查询实现下沉于本组件。
 	 * @param Scope           依赖作用域（Instigator / Avatar / Target）
 	 * @param ComponentClass  组件类型
 	 * @return 预缓存的组件引用，未找到时返回 nullptr
 	 */
+	UFUNCTION(
+		BlueprintPure,
+		BlueprintInternalUseOnly,
+		Category = "SingularisCombine|引力奇点化合组件|State",
+		meta = (DisplayName = "获取声明组件", DeterminesOutputType = "ComponentClass")
+	)
 	virtual UActorComponent* GetDeclaredComponent(
 		ESingularisCombineDependencyScope Scope,
 		TSubclassOf<UActorComponent> ComponentClass

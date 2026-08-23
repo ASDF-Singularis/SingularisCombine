@@ -44,8 +44,8 @@
 | **状态感知** | 遍历 Actor 及挂载组件，通过 `IGameplayTagAssetInterface` 提取并汇总 `BlackboardTags`。 |
 | **事件广播** | 状态更新时触发 `OnCombineBlackboardUpdatedEvent`，允许外部系统（如 UI）被动监听环境变化。 |
 | **管线求值** | 提供 `EvaluatePipeline()` 核心方法，按顺序逐一询问并执行 `CombinePipeline` 中的策略列表。所有策略独立判定，互不中断。 |
-| **依赖预解析** | 评估前调用组件层的 `ResolveDependencies(Context)`，通过策略虚函数 `GetDeclaredComponentClasses()` 收集管线所有策略的声明并集（原生类查询全局静态注册表、蓝图类读取 CDO 的 `DeclaredComponents`），将每个作用域映射到 Context 中对应 Actor 并查找缓存到 `CachedDependencies`；调用时机覆盖 `EvaluatePipeline` 与 `TickComponent`，保证 `SustainReaction` 中查询亦可用。 |
-| **依赖前置预检** | `AreDependenciesSatisfied(Strategy, Context)` 在 `CanReaction` 之前强约束检查：空声明=无条件满足；任意声明依赖缺失=不进入 `CanReaction`，直接走回滚路径。门控集合与 `ResolveDependencies` 的查询集合共享同一声明源（`GetDeclaredComponentClasses()`），保证 `CanReaction` / `Reaction` 执行时声明依赖必定存在。 |
+| **依赖预解析** | 评估前调用组件层的 `ResolveDependencies(Context)`，由组件内部 `CollectDeclaredComponentClasses(Strategy)` 归一声明集合（原生类查全局静态注册表、蓝图类读策略 CDO 的 `DeclaredComponents`，friend 授权），将每个作用域映射到 Context 中对应 Actor 并查找缓存到 `CachedDependencies`；调用时机覆盖 `EvaluatePipeline` 与 `TickComponent`，保证 `SustainReaction` 中查询亦可用。 |
+| **依赖前置预检** | `AreDependenciesSatisfied(Strategy, Context)` 在 `CanReaction` 之前强约束检查：空声明=无条件满足；任意声明依赖缺失=不进入 `CanReaction`，直接走回滚路径。门控集合与 `ResolveDependencies` 的查询集合共享同一声明源（`CollectDeclaredComponentClasses()`），保证 `CanReaction` / `Reaction` 执行时声明依赖必定存在。 |
 | **事件驱动评估** | 提供 `TriggerEvaluate(Payload)` API，立即触发一次评估并将事件载荷贯穿整条管线，不等周期轮询。 |
 
 ### 2. `USingularisCombine` (化合策略基类)
@@ -67,7 +67,7 @@
 
 **单一真相源原则 (Single Source of Truth)：** 声明式组件遵循「声明即逻辑、实例即状态」的判定——声明属于静态逻辑（类级），实例只承载动态状态。因此声明数据归属类级，不再放入每实例编辑器配置。化合核心是查询，玩家所需查询的组件与门控前置的集合一致：声明集合 == 门控集合 == 可查询集合，三者不可分离。
 
-**分层设计：** 采用「声明源 → 注册表/CDO → 提供者注入」三段式。原生类与蓝图类声明源不同，运行期由统一的 `GetDeclaredComponentClasses()` 虚函数归一：
+**分层设计：** 采用「声明源 → 注册表/CDO → 提供者注入」三段式。原生类与蓝图类声明源不同，运行期由化合组件内部的 `CollectDeclaredComponentClasses()` 归一（策略类不承载查询/聚合职责）：
 
 - **原生类（静态注册表）：** 声明宏在头文件展开为「类型安全访问器 + 静态注册器实例」，静态注册器在模块加载期向全局注册表登记 `(StaticClass, Scope, ComponentClass)`。模块加载早于任何 Gameplay 代码，注册表在评估期必然完整，规避「CDO 构造时机 vs 静态初始化时机」的排序风险。
 - **蓝图类（CDO 回填）：** 声明节点 `DeclareDependency`（配置作用域 + 组件类，输出引脚类型由组件类推导）即声明即使用；编译期 hook（`FCoreUObjectDelegates::OnObjectPostCDOCompiled` 扫图）提取节点，按 `(Scope, Class)` 去重写入编译产物 CDO 的 `DeclaredComponents`。运行期读取 CDO 值。
@@ -76,21 +76,23 @@
 **策略层（`USingularisCombine`）**：
 
 - **`DeclaredComponents`：** `private` 字段，类型为 `TMap<ESingularisCombineDependencyScope, FSingularisCombineDependencyList>`，仅服务蓝图 CDO 回填。UHT 不支持嵌套容器作为 UPROPERTY，用 `FSingularisCombineDependencyList` USTRUCT 包装 `TArray<TSubclassOf<UActorComponent>>` 作为 Map 值。
-- **`GetDeclaredComponentClasses()`：** `virtual` 虚函数，按类来源归一声明集合——原生类从全局注册表查询，蓝图类从自身 CDO `DeclaredComponents` 读取。供 `ResolveDependencies` 聚合并集、`AreDependenciesSatisfied` 门控校验共用。
-- **类型安全访问器（宏生成）：** C++ 路径唯一查询入口。`SINGULARIS_DECLARE_DEPENDENCY(Scope, UClass, Name)` 在类体内展开为返回 `UClass*` 的 `inline` 访问器 `Get[Name]() const`，内部委托 `GetDeclaredComponent(Scope, UClass::StaticClass())`。声明与获取绑定在同一处，编译期类型校验，不可绕过。
-- **`GetDeclaredComponent(Scope, Class)`：** 降为 `protected`（必须可被派生类宏访问器调用），仅宏生成的访问器与蓝图声明节点内部使用。蓝图侧保留 BlueprintPure 入口，由声明节点直接绑定调用（节点继承 `UK2Node_CallFunction`，编译器直接生成调用，无展开环节）；C++ 侧模板便捷版移除（由宏访问器取代）。
+- **`CollectDeclaredComponentClasses(Strategy)`：** 组件内部函数，按类来源归一声明集合——原生类沿继承链查全局注册表，蓝图类读策略 CDO `DeclaredComponents`（friend 授权）。供 `ResolveDependencies` 聚合并集、`AreDependenciesSatisfied` 门控校验共用，是「声明集合 == 门控集合 == 可查询集合」的唯一真源。
+- **类型安全访问器（宏生成）：** C++ 路径唯一查询入口。`SINGULARIS_DECLARE_DEPENDENCY(Scope, UClass, Name)` 在类体内展开为返回 `UClass*` 的 `inline` 访问器 `Get[Name]() const`，直调注入的依赖查询提供者（`DependencyProvider->GetDeclaredComponent(Scope, Class)`），未注入时返回 `nullptr`。声明与获取绑定在同一处，编译期类型校验，不可绕过。
+- **`GetDependencyProvider()`：** `BlueprintInternalUseOnly` 纯函数，返回注入的化合组件实例，仅供蓝图声明节点经反射调用（蓝图侧唯一入口，不可被用户直接拖出）。
 - **`SetDependencyProvider(Provider)`：** 由化合组件在注册/替换管线时调用，将自身注入为策略的依赖查询入口，解除策略对具体组件类的直接引用。
 
 **组件层（`USingularisCombineComponent`）**：
 
+- **实现 `ISingularisCombineDependencyProvider`：** 组件实现依赖查询接口，通过 `BindDependencyProvider` 注入管线内所有策略，覆盖 `BeginPlay` / `SetPipeline` / `AddCombineEntry` 路径。查询实现即 `GetDeclaredComponent(Scope, Class)`（`BlueprintInternalUseOnly`），读 `CachedDependencies` 缓存。
+
 - **实现 `ISingularisCombineDependencyProvider`：** 组件实现依赖查询接口，通过 `BindDependencyProvider` 注入管线内所有策略，覆盖 `BeginPlay` / `SetPipeline` / `AddCombineEntry` 路径。
 - **`CachedDependencies`：** 运行时缓存，类型为 `TMap<ESingularisCombineDependencyScope, TMap<TSubclassOf<UActorComponent>, TWeakObjectPtr<UActorComponent>>>`，按作用域分组。纯 C++ 成员（非 UPROPERTY）。
-- **`ResolveDependencies(Context)`：** 评估前刷新缓存。通过 `GetDeclaredComponentClasses()` 收集管线所有策略声明的依赖并集（跨原生注册表与蓝图 CDO），将每个作用域映射到 Context 中的 Actor（`GetContextActor`），按声明类型查找并写入对应作用域槽位。
-- **`AreDependenciesSatisfied(Strategy, Context)`：** `CanReaction` 的前置强约束。空声明返回 true（无条件满足）；任一声明依赖缺失返回 false（不进入 `CanReaction`，直接回滚）。门控集合与可查询集合共享 `GetDeclaredComponentClasses()` 同源，保证 `CanReaction` / `Reaction` 执行时声明依赖必定存在。
+- **`ResolveDependencies(Context)`：** 评估前刷新缓存。通过 `CollectDeclaredComponentClasses(Strategy)` 收集管线所有策略声明的依赖并集（跨原生注册表与蓝图 CDO），将每个作用域映射到 Context 中的 Actor（`GetContextActor`），按声明类型查找并写入对应作用域槽位。
+- **`AreDependenciesSatisfied(Strategy, Context)`：** `CanReaction` 的前置强约束。空声明返回 true（无条件满足）；任一声明依赖缺失返回 false（不进入 `CanReaction`，直接回滚）。门控集合与可查询集合共享 `CollectDeclaredComponentClasses()` 同源，保证 `CanReaction` / `Reaction` 执行时声明依赖必定存在。
 
 **蓝图体验：** 4-5 节点样板（Get Outer → Cast → Get Owner → Get Component by Class → Is Valid）拆分为单节点——`DeclareDependency`（作用域与组件类即节点输入引脚，未连接时直接在节点上选择，编译期注入 CDO，输出引脚直接输出组件引用）。输出类型由节点上配置的组件类实时推导，声明与使用同一节点，无需跨节点绑定，不存在未声明或声明/使用不一致的路径。
 
-**重复声明（推荐用法）：** 同一蓝图内可放置多个配置相同的 `DeclareDependency` 节点，每个使用位置就近放置、各自输出组件引用，避免跨图长线连接，蓝图结构更清晰。重复声明不会造成冗余：CDO 回填按 `(Scope, Class)` 经 `AddUnique` 去重，编译产物只保留一份；各节点独立绑定 `GetDeclaredComponent(Scope, Class)` 调用，无共享状态；输出未连接的节点即使被编译器修剪，也不影响 hook 对原始图的扫描，声明仍照常入 CDO。注意：复制节点后**修改**配置（如更换 `ComponentClass`）即视为新声明，会新增门控依赖，需确认改动是有意的。
+**重复声明（推荐用法）：** 同一蓝图内可放置多个配置相同的 `DeclareDependency` 节点，每个使用位置就近放置、各自输出组件引用，避免跨图长线连接，蓝图结构更清晰。重复声明不会造成冗余：CDO 回填按 `(Scope, Class)` 经 `AddUnique` 去重，编译产物只保留一份；各节点独立展开为「策略获取依赖提供者 → 组件查询声明组件」两步调用，无共享状态；输出未连接的节点即使被编译器修剪，也不影响 hook 对原始图的扫描，声明仍照常入 CDO。注意：复制节点后**修改**配置（如更换 `ComponentClass`）即视为新声明，会新增门控依赖，需确认改动是有意的。
 
 ### 3. `FSingularisCombineTransientPayload` (瞬态负荷)
 
@@ -124,7 +126,7 @@
 2. **标签变更检测与广播：** 若 GameplayTags 或原生 FName 标签集合实际变更，触发 `OnCombineBlackboardUpdatedEvent`（所有端）。
 3. **服务端权威闸门：** 非服务端提前 return，后续步骤仅服务端执行。
 4. **Context 与 Payload 构建：** 构建 `Context`（Instigator / Avatar / Target / CombineComponent）与 `Payload` 局部快照（读取 `PendingPayload`，周期轮询时为空）。
-5. **依赖预解析 (Dependency Resolution)：** 调用组件层 `ResolveDependencies(Context)`，通过策略虚函数 `GetDeclaredComponentClasses()` 按作用域聚合管线所有策略的声明并集（跨原生注册表与蓝图 CDO），对三个 Actor 分别查找并写入 `CachedDependencies`。
+5. **依赖预解析 (Dependency Resolution)：** 调用组件层 `ResolveDependencies(Context)`，由组件内部 `CollectDeclaredComponentClasses(Strategy)` 按作用域聚合管线所有策略的声明并集（跨原生注册表与蓝图 CDO），对三个 Actor 分别查找并写入 `CachedDependencies`。
 6. **状态推演 (State Transition)：** 按序遍历策略：
    - **依赖前置预检**：逐策略调用 `AreDependenciesSatisfied(Strategy, Context)`。空声明=无条件满足；任一声明依赖缺失=不进入 `CanReaction`，若策略原处于激活态则直接走 `ReactionRevert`。门控集合与查询集合同源，不可分离。
    - 若 `CanReaction == true` 且当前 `bIsActive == false`：调用 `Reaction()`，标记激活。
