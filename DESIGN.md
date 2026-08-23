@@ -78,7 +78,7 @@
 - **`DeclaredComponents`：** `private` 字段，类型为 `TMap<ESingularisCombineDependencyScope, FSingularisCombineDependencyList>`，仅服务蓝图 CDO 回填。UHT 不支持嵌套容器作为 UPROPERTY，用 `FSingularisCombineDependencyList` USTRUCT 包装 `TArray<TSubclassOf<UActorComponent>>` 作为 Map 值。
 - **`GetDeclaredComponentClasses()`：** `virtual` 虚函数，按类来源归一声明集合——原生类从全局注册表查询，蓝图类从自身 CDO `DeclaredComponents` 读取。供 `ResolveDependencies` 聚合并集、`AreDependenciesSatisfied` 门控校验共用。
 - **类型安全访问器（宏生成）：** C++ 路径唯一查询入口。`SINGULARIS_DECLARE_DEPENDENCY(Scope, UClass, Name)` 在类体内展开为返回 `UClass*` 的 `inline` 访问器 `Get[Name]() const`，内部委托 `GetDeclaredComponent(Scope, UClass::StaticClass())`。声明与获取绑定在同一处，编译期类型校验，不可绕过。
-- **`GetDeclaredComponent(Scope, Class)`：** 降为 `protected`（必须可被派生类宏访问器调用），仅宏生成的访问器与蓝图声明节点内部使用。蓝图侧保留 BlueprintPure 入口，由声明节点 `ExpandNode` 展开为对该函数的调用；C++ 侧模板便捷版移除（由宏访问器取代）。
+- **`GetDeclaredComponent(Scope, Class)`：** 降为 `protected`（必须可被派生类宏访问器调用），仅宏生成的访问器与蓝图声明节点内部使用。蓝图侧保留 BlueprintPure 入口，由声明节点直接绑定调用（节点继承 `UK2Node_CallFunction`，编译器直接生成调用，无展开环节）；C++ 侧模板便捷版移除（由宏访问器取代）。
 - **`SetDependencyProvider(Provider)`：** 由化合组件在注册/替换管线时调用，将自身注入为策略的依赖查询入口，解除策略对具体组件类的直接引用。
 
 **组件层（`USingularisCombineComponent`）**：
@@ -90,7 +90,7 @@
 
 **蓝图体验：** 4-5 节点样板（Get Outer → Cast → Get Owner → Get Component by Class → Is Valid）拆分为单节点——`DeclareDependency`（作用域与组件类即节点输入引脚，未连接时直接在节点上选择，编译期注入 CDO，输出引脚直接输出组件引用）。输出类型由节点上配置的组件类实时推导，声明与使用同一节点，无需跨节点绑定，不存在未声明或声明/使用不一致的路径。
 
-**重复声明（推荐用法）：** 同一蓝图内可放置多个配置相同的 `DeclareDependency` 节点，每个使用位置就近放置、各自输出组件引用，避免跨图长线连接，蓝图结构更清晰。重复声明不会造成冗余：CDO 回填按 `(Scope, Class)` 经 `AddUnique` 去重，编译产物只保留一份；各节点独立展开为 `GetDeclaredComponent(Scope, Class)` 调用，无共享状态；输出未连接的节点即使被编译器修剪，也不影响 hook 对原始图的扫描，声明仍照常入 CDO。注意：复制节点后**修改**配置（如更换 `ComponentClass`）即视为新声明，会新增门控依赖，需确认改动是有意的。
+**重复声明（推荐用法）：** 同一蓝图内可放置多个配置相同的 `DeclareDependency` 节点，每个使用位置就近放置、各自输出组件引用，避免跨图长线连接，蓝图结构更清晰。重复声明不会造成冗余：CDO 回填按 `(Scope, Class)` 经 `AddUnique` 去重，编译产物只保留一份；各节点独立绑定 `GetDeclaredComponent(Scope, Class)` 调用，无共享状态；输出未连接的节点即使被编译器修剪，也不影响 hook 对原始图的扫描，声明仍照常入 CDO。注意：复制节点后**修改**配置（如更换 `ComponentClass`）即视为新声明，会新增门控依赖，需确认改动是有意的。
 
 ### 3. `FSingularisCombineTransientPayload` (瞬态负荷)
 
