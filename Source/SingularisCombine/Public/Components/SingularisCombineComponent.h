@@ -5,8 +5,8 @@
 #include <TimerManager.h>
 #include <Components/ActorComponent.h>
 
-#include "Interfaces/SingularisCombineDependencyProvider.h"
 #include "Types/SingularisCombineComponentType.h"
+#include "Types/SingularisCombineDependencyList.h"
 #include "Types/SingularisCombineDependencyScope.h"
 #include "Types/SingularisCombineTransientPayload.h"
 #include "SingularisCombineComponent.generated.h"
@@ -32,6 +32,9 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(
  * 引力奇点化合组件
  * 挂载于 Actor 上，负责收集同 Actor 下所有组件的 GameplayTags 及原生 FName 标签并维护全局黑板，
  * 驱动化合管线逐策略评估：满足条件时触发 Reaction，不满足时触发 ReactionRevert，所有策略独立判定互不中断。
+ *
+ * 同时承担声明式依赖的单一职责：登记、查询、缓存全部收口于本组件，
+ * 策略类不知晓组件存在（依赖倒置），消除双向耦合。
  */
 UCLASS(
 	Blueprintable,
@@ -39,8 +42,7 @@ UCLASS(
 	ClassGroup = ("Singularis"),
 	meta = (BlueprintSpawnableComponent, DisplayName = "引力奇点化合组件")
 )
-class SINGULARISCOMBINE_API USingularisCombineComponent : public UActorComponent,
-                                                          public ISingularisCombineDependencyProvider
+class SINGULARISCOMBINE_API USingularisCombineComponent : public UActorComponent
 {
 	GENERATED_BODY()
 
@@ -119,8 +121,7 @@ private:
 	 * 由 ResolveDependencies(Context) 每次评估前刷新
 	 */
 	TMap<ESingularisCombineDependencyScope, TMap<TSubclassOf<UActorComponent>, TWeakObjectPtr<UActorComponent>>>
-	CachedDependencies
-		{};
+	CachedDependencies{};
 
 #pragma endregion
 
@@ -165,37 +166,41 @@ public:
 	const TArray<FName>& GetNativeBlackboardTags() const { return NativeBlackboardTags; }
 
 	/**
-	 * 预解析管线中所有策略声明式配置的组件
-	 * 收集所有策略的 DeclaredComponents 并集，将每个作用域映射到 Context 中的 Actor，
-	 * 按声明类型查找并缓存到对应作用域槽位。
-	 * 必须在策略评估前调用；策略通过 GetDeclaredComponent 读取缓存。
-	 * @param Context  化合上下文，提供 Instigator/Avatar/Target 三个 Actor
-	 */
-	void ResolveDependencies(const FSingularisCombineContext& Context);
-
-	/**
 	 * 查询预缓存的声明式组件
+	 * BlueprintPure + DeterminesOutputType：声明节点的输出引脚类型随 ComponentClass 自动推导。
+	 * 必须在 ResolveDependencies(Context) 之后调用。
 	 * @param Scope           依赖作用域（Instigator / Avatar / Target）
 	 * @param ComponentClass  组件类型
 	 * @return 预缓存的组件引用，未找到时返回 nullptr
 	 */
-	virtual UActorComponent* GetDeclaredComponent(
+	UFUNCTION(
+		BlueprintPure,
+		Category = "SingularisCombine|引力奇点化合组件|State",
+		meta = (DisplayName = "获取声明组件", DeterminesOutputType = "ComponentClass")
+	)
+	UActorComponent* GetDeclaredComponent(
 		ESingularisCombineDependencyScope Scope,
 		TSubclassOf<UActorComponent> ComponentClass
-	) const override;
-
-	/**
-	 * 检查策略声明的依赖是否全部满足
-	 * 空声明返回 true（无条件满足）；任一声明缺失返回 false
-	 * @param Strategy  目标策略
-	 * @param Context   化合上下文，用于将作用域映射到 Actor
-	 * @return 声明依赖是否全部命中缓存
-	 */
-	bool AreDependenciesSatisfied(const USingularisCombine* Strategy, const FSingularisCombineContext& Context) const;
+	) const;
 
 #pragma endregion
 
 #pragma region API
+
+	/**
+	 * 静态工厂：从策略实例反查所属的化合组件
+	 * 策略实例作为 UObject 子对象挂载于组件，通过 Outer 链定位。
+	 * 供声明节点 K2Node 展开期生成 GetFromStrategy → GetDeclaredComponent 两步调用链使用，
+	 * 避免策略类持有对组件的反向引用（依赖倒置）。
+	 * @param Strategy  策略实例（不可为空，CDO 返回 nullptr）
+	 * @return 挂载该策略的化合组件；Outer 非组件或 CDO 时返回 nullptr
+	 */
+	UFUNCTION(
+		BlueprintPure,
+		Category = "SingularisCombine|引力奇点化合组件|API",
+		meta = (DisplayName = "GetFromStrategy")
+	)
+	static USingularisCombineComponent* GetFromStrategy(const USingularisCombine* Strategy);
 
 	/**
 	 * 设置化合管线
@@ -256,6 +261,33 @@ public:
 private:
 #pragma region Internal Function
 
+	/**
+	* 预解析管线中所有策略声明式配置的组件
+	* 收集所有策略声明的依赖并集，将每个作用域映射到 Context 中的 Actor，
+	 * 按声明类型查找并缓存到对应作用域槽位。
+	 * 必须在策略评估前调用；策略通过 GetDeclaredComponent 读取缓存。
+	*/
+	void ResolveDependencies();
+
+	/**
+	 * 查询指定策略类声明式配置的组件类型集合
+	 * 沿继承链聚合所有祖先注册表声明（含自身），合并子策略继承父策略的全部声明。
+	 * 注册表为唯一真相源，原生路径与蓝图路径统一经由编译 hook 写入。
+	 * @param StrategyClass  策略类
+	 * @return 按作用域分组的声明组件类型列表
+	 */
+	static TMap<ESingularisCombineDependencyScope, FSingularisCombineDependencyList>
+	GetDeclaredComponentClasses(const UClass* StrategyClass);
+
+	/**
+	* 检查策略声明的依赖是否全部满足
+	* 空声明返回 true（无条件满足）；任一声明缺失返回 false
+	* @param Strategy  目标策略
+	 * @param Context   化合上下文，用于将作用域映射到 Actor
+	 * @return 声明依赖是否全部命中缓存
+	 */
+	bool AreDependenciesSatisfied(const USingularisCombine* Strategy, const FSingularisCombineContext& Context) const;
+
 	/** 收集同 Actor 下所有 GameplayTags 及原生 FName 标签 */
 	void CollectAllTags();
 
@@ -270,9 +302,6 @@ private:
 	 * 当任意 UActorComponent 被构造且其 Outer 为本组件 OwnerActor 时，合并触发管线评估。
 	 */
 	void OnOwnerChildComponentConstructed(UObject* Object);
-
-	/** 将本组件注入为管线中所有策略的依赖查询提供者（依赖倒置，解除策略对组件的直接引用） */
-	void BindDependencyProvider();
 
 	/** 将依赖作用域映射为 Context 中对应的 Actor */
 	static AActor* GetContextActor(const FSingularisCombineContext& Context, ESingularisCombineDependencyScope Scope);

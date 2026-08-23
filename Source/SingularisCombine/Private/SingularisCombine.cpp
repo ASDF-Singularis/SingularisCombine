@@ -1,5 +1,7 @@
 #include "SingularisCombine.h"
 
+DEFINE_LOG_CATEGORY(LogSingularisCombine);
+
 #define LOCTEXT_NAMESPACE "FSingularisCombineModule"
 
 void FSingularisCombineModule::StartupModule() {}

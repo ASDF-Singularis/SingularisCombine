@@ -4,7 +4,6 @@
 #include <GameFramework/Actor.h>
 #include <Net/UnrealNetwork.h>
 
-#include "Interfaces/SingularisCombineDependencyProvider.h"
 #include "Types/SingularisCombineTransientPayload.h"
 
 UWorld* USingularisCombine::GetWorld() const
@@ -94,23 +93,3 @@ void USingularisCombine::SustainReaction_Implementation(
 ) {}
 
 void USingularisCombine::OnRep_IsActive_Implementation() const {}
-
-UActorComponent* USingularisCombine::GetDeclaredComponent(
-	const ESingularisCombineDependencyScope Scope,
-	const TSubclassOf<UActorComponent> ComponentClass
-) const
-{
-	if (!ComponentClass)
-		return nullptr;
-
-	// 1) 委托注入的依赖查询提供者
-	if (const ISingularisCombineDependencyProvider* const Provider = DependencyProvider.Get())
-		return Provider->GetDeclaredComponent(Scope, ComponentClass);
-
-	return nullptr;
-}
-
-void USingularisCombine::SetDependencyProvider(ISingularisCombineDependencyProvider* Provider)
-{
-	DependencyProvider = Provider;
-}
