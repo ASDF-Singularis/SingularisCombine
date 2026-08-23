@@ -88,7 +88,9 @@
 - **`ResolveDependencies(Context)`：** 评估前刷新缓存。通过 `GetDeclaredComponentClasses()` 收集管线所有策略声明的依赖并集（跨原生注册表与蓝图 CDO），将每个作用域映射到 Context 中的 Actor（`GetContextActor`），按声明类型查找并写入对应作用域槽位。
 - **`AreDependenciesSatisfied(Strategy, Context)`：** `CanReaction` 的前置强约束。空声明返回 true（无条件满足）；任一声明依赖缺失返回 false（不进入 `CanReaction`，直接回滚）。门控集合与可查询集合共享 `GetDeclaredComponentClasses()` 同源，保证 `CanReaction` / `Reaction` 执行时声明依赖必定存在。
 
-**蓝图体验：** 4-5 节点样板（Get Outer → Cast → Get Owner → Get Component by Class → Is Valid）拆分为单节点——`DeclareDependency`（编辑器面板配置作用域 + 组件类，编译期注入 CDO，输出引脚直接输出组件引用）。输出类型由节点自持的组件类推导，声明与使用同一节点，无需跨节点绑定，不存在未声明或声明/使用不一致的路径。
+**蓝图体验：** 4-5 节点样板（Get Outer → Cast → Get Owner → Get Component by Class → Is Valid）拆分为单节点——`DeclareDependency`（作用域与组件类即节点输入引脚，未连接时直接在节点上选择，编译期注入 CDO，输出引脚直接输出组件引用）。输出类型由节点上配置的组件类实时推导，声明与使用同一节点，无需跨节点绑定，不存在未声明或声明/使用不一致的路径。
+
+**重复声明（推荐用法）：** 同一蓝图内可放置多个配置相同的 `DeclareDependency` 节点，每个使用位置就近放置、各自输出组件引用，避免跨图长线连接，蓝图结构更清晰。重复声明不会造成冗余：CDO 回填按 `(Scope, Class)` 经 `AddUnique` 去重，编译产物只保留一份；各节点独立展开为 `GetDeclaredComponent(Scope, Class)` 调用，无共享状态；输出未连接的节点即使被编译器修剪，也不影响 hook 对原始图的扫描，声明仍照常入 CDO。注意：复制节点后**修改**配置（如更换 `ComponentClass`）即视为新声明，会新增门控依赖，需确认改动是有意的。
 
 ### 3. `FSingularisCombineTransientPayload` (瞬态负荷)
 

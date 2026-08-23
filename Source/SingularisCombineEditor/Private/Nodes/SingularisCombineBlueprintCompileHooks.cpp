@@ -1,6 +1,7 @@
 #include "Nodes/SingularisCombineBlueprintCompileHooks.h"
 
 #include <EdGraph/EdGraph.h>
+#include <EdGraph/EdGraphPin.h>
 #include <Engine/Blueprint.h>
 #include <UObject/UObjectGlobals.h>
 
@@ -57,9 +58,30 @@ void FSingularisCombineBlueprintCompileHook::HandleCDOCompiled(
 		Graph->GetNodesOfClass<UK2Node_SingularisDeclareDependency>(Found);
 		for (const UK2Node_SingularisDeclareDependency* Node : Found)
 		{
-			if (!Node || !Node->ComponentClass)
+			if (!Node)
 				continue;
-			Backfilled.FindOrAdd(Node->Scope).Classes.AddUnique(Node->ComponentClass);
+
+			// 仅收录未连接的静态声明（连接引脚的动态值编译期不可知，不入 CDO）
+			const UEdGraphPin* ScopePin = Node->FindPin(UK2Node_SingularisDeclareDependency::GetScopePinName());
+			const UEdGraphPin* ClassPin = Node->FindPin(
+				UK2Node_SingularisDeclareDependency::GetComponentClassPinName()
+			);
+			if (!ScopePin || !ClassPin || ScopePin->LinkedTo.Num() > 0 || ClassPin->LinkedTo.Num() > 0)
+				continue;
+
+			UClass* ComponentType = Cast<UClass>(ClassPin->DefaultObject);
+			if (!ComponentType)
+				continue;
+
+			const int64 ScopeValue = StaticEnum<ESingularisCombineDependencyScope>()->GetValueByName(
+				FName(ScopePin->DefaultValue)
+			);
+			if (ScopeValue == INDEX_NONE)
+				continue;
+
+			Backfilled.FindOrAdd(static_cast<ESingularisCombineDependencyScope>(ScopeValue)).Classes.AddUnique(
+				ComponentType
+			);
 		}
 	}
 

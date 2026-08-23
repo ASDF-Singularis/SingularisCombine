@@ -17,7 +17,26 @@ void UK2Node_SingularisDeclareDependency::AllocateDefaultPins()
 {
 	Super::AllocateDefaultPins();
 
-	// 隐藏 self 引脚：编译器自动连接到蓝图 self 上下文，ExpandNode 迁移至调用节点
+	// Scope 输入引脚（枚举）：静态声明配置，未连接时直接在节点上选择
+	UEdGraphPin* ScopePin = CreatePin(
+		EGPD_Input,
+		UEdGraphSchema_K2::PC_Byte,
+		StaticEnum<ESingularisCombineDependencyScope>(),
+		GetScopePinName()
+	);
+	ScopePin->DefaultValue = StaticEnum<ESingularisCombineDependencyScope>()->GetNameStringByValue(
+		static_cast<int64>(ESingularisCombineDependencyScope::Avatar)
+	);
+
+	// ComponentClass 输入引脚（类）：静态声明配置，未连接时直接在节点上选择组件类
+	UEdGraphPin* ClassPin = CreatePin(
+		EGPD_Input,
+		UEdGraphSchema_K2::PC_Class,
+		UActorComponent::StaticClass(),
+		GetComponentClassPinName()
+	);
+
+	// 隐藏 self 引脚：编译器自动连接蓝图 self 上下文，ExpandNode 迁移至调用节点
 	UEdGraphPin* SelfPin = CreatePin(
 		EGPD_Input,
 		UEdGraphSchema_K2::PC_Object,
@@ -26,24 +45,38 @@ void UK2Node_SingularisDeclareDependency::AllocateDefaultPins()
 	);
 	SelfPin->bHidden = true;
 
-	// 输出引脚：类型由节点自持的组件类窄化
-	UEdGraphPin* OutPin = CreatePin(
+	// 输出引脚：类型跟随组件类配置
+	CreatePin(
 		EGPD_Output,
 		UEdGraphSchema_K2::PC_Object,
 		UActorComponent::StaticClass(),
 		UEdGraphSchema_K2::PN_ReturnValue
 	);
-	if (ComponentClass)
-		OutPin->PinType.PinSubCategoryObject = ComponentClass;
+	ConformOutputPinType();
 }
 
 void UK2Node_SingularisDeclareDependency::ExpandNode(FKismetCompilerContext& CompilerContext, UEdGraph* SourceGraph)
 {
 	Super::ExpandNode(CompilerContext, SourceGraph);
 
-	if (!ComponentClass)
+	UEdGraphPin* ScopePin = FindPin(GetScopePinName());
+	UEdGraphPin* ClassPin = FindPin(GetComponentClassPinName());
+	UClass* ComponentType = ClassPin ? Cast<UClass>(ClassPin->DefaultObject) : nullptr;
+	if (!ScopePin || !ClassPin)
 	{
-		CompilerContext.MessageLog.Error(TEXT("@0 的组件类未设置"), this);
+		CompilerContext.MessageLog.Error(TEXT("@0 缺少配置引脚"), this);
+		BreakAllNodeLinks();
+		return;
+	}
+	if (!ScopePin->LinkedTo.Num() && ScopePin->DefaultValue.IsEmpty())
+	{
+		CompilerContext.MessageLog.Error(TEXT("@0 的作用域未配置"), this);
+		BreakAllNodeLinks();
+		return;
+	}
+	if (!ClassPin->LinkedTo.Num() && !ComponentType)
+	{
+		CompilerContext.MessageLog.Error(TEXT("@0 的组件类未配置"), this);
 		BreakAllNodeLinks();
 		return;
 	}
@@ -62,42 +95,79 @@ void UK2Node_SingularisDeclareDependency::ExpandNode(FKismetCompilerContext& Com
 	if (NodeSelfPin)
 		CompilerContext.MovePinLinksToIntermediate(*NodeSelfPin, *CallSelfPin);
 
-	// Scope 字面量
-	if (UEdGraphPin* ScopeArg = CallGet->FindPinChecked(TEXT("Scope")))
-	{
-		ScopeArg->DefaultValue = StaticEnum<ESingularisCombineDependencyScope>()->GetNameStringByValue(
-			static_cast<int64>(Scope)
-		);
-	}
+	// Scope 参数：连接则迁移，否则写入字面量
+	UEdGraphPin* ScopeArg = CallGet->FindPinChecked(TEXT("Scope"));
+	if (ScopePin->LinkedTo.Num() > 0)
+		CompilerContext.MovePinLinksToIntermediate(*ScopePin, *ScopeArg);
+	else
+		ScopeArg->DefaultValue = ScopePin->DefaultValue;
 
-	// ComponentClass 字面量
-	if (UEdGraphPin* ClassArg = CallGet->FindPinChecked(TEXT("ComponentClass")))
-		ClassArg->DefaultObject = ComponentClass;
+	// ComponentClass 参数：连接则迁移，否则写入字面量
+	UEdGraphPin* ClassArg = CallGet->FindPinChecked(TEXT("ComponentClass"));
+	if (ClassPin->LinkedTo.Num() > 0)
+		CompilerContext.MovePinLinksToIntermediate(*ClassPin, *ClassArg);
+	else
+		ClassArg->DefaultObject = ClassPin->DefaultObject;
 
 	// 输出引脚类型推导 + 链接迁移到中间调用节点
 	UEdGraphPin* NodeOutPin = FindPinChecked(UEdGraphSchema_K2::PN_ReturnValue);
 	UEdGraphPin* CallOutPin = CallGet->GetReturnValuePin();
-	NodeOutPin->PinType.PinSubCategoryObject = ComponentClass;
-	CallOutPin->PinType.PinSubCategoryObject = ComponentClass;
+	NodeOutPin->PinType.PinSubCategoryObject = ComponentType ? ComponentType : UActorComponent::StaticClass();
+	CallOutPin->PinType.PinSubCategoryObject = ComponentType ? ComponentType : UActorComponent::StaticClass();
 	CompilerContext.MovePinLinksToIntermediate(*NodeOutPin, *CallOutPin);
 
 	BreakAllNodeLinks();
 }
 
+void UK2Node_SingularisDeclareDependency::PostReconstructNode()
+{
+	Super::PostReconstructNode();
+	ConformOutputPinType();
+}
+
+void UK2Node_SingularisDeclareDependency::PinDefaultValueChanged(UEdGraphPin* Pin)
+{
+	Super::PinDefaultValueChanged(Pin);
+
+	if (Pin && Pin->PinName == GetComponentClassPinName())
+		ConformOutputPinType();
+}
+
+void UK2Node_SingularisDeclareDependency::ConformOutputPinType()
+{
+	UEdGraphPin* ClassPin = FindPin(GetComponentClassPinName());
+	UEdGraphPin* OutPin = FindPin(UEdGraphSchema_K2::PN_ReturnValue);
+	if (!ClassPin || !OutPin)
+		return;
+
+	UClass* ComponentType = Cast<UClass>(ClassPin->DefaultObject);
+	OutPin->PinType.PinSubCategoryObject = ComponentType ? ComponentType : UActorComponent::StaticClass();
+}
+
 FText UK2Node_SingularisDeclareDependency::GetNodeTitle(ENodeTitleType::Type TitleType) const
 {
-	if (!ComponentClass)
+	UEdGraphPin* ScopePin = FindPin(GetScopePinName());
+	UEdGraphPin* ClassPin = FindPin(GetComponentClassPinName());
+
+	const UClass* ComponentType = ClassPin ? Cast<UClass>(ClassPin->DefaultObject) : nullptr;
+	if (!ScopePin || ScopePin->DefaultValue.IsEmpty() || !ComponentType)
 		return LOCTEXT("NodeTitle_None", "声明依赖");
+
+	const UEnum* ScopeEnum = StaticEnum<ESingularisCombineDependencyScope>();
+	const int64 ScopeValue = ScopeEnum->GetValueByName(FName(ScopePin->DefaultValue));
+	if (ScopeValue == INDEX_NONE)
+		return LOCTEXT("NodeTitle_None", "声明依赖");
+
 	return FText::Format(
 		LOCTEXT("NodeTitle", "声明依赖 {0}: {1}"),
-		StaticEnum<ESingularisCombineDependencyScope>()->GetDisplayNameTextByValue(static_cast<int64>(Scope)),
-		ComponentClass->GetDisplayNameText()
+		ScopeEnum->GetDisplayNameTextByValue(ScopeValue),
+		ComponentType->GetDisplayNameText()
 	);
 }
 
 FText UK2Node_SingularisDeclareDependency::GetTooltipText() const
 {
-	return LOCTEXT("NodeTooltip", "声明策略对该作用域组件的依赖并输出组件引用，编译期写入 CDO");
+	return LOCTEXT("NodeTooltip", "声明策略对该作用域组件的依赖并输出组件引用（节点上直接配置作用域与组件类），编译期写入 CDO");
 }
 
 FLinearColor UK2Node_SingularisDeclareDependency::GetNodeTitleColor() const
@@ -112,8 +182,17 @@ void UK2Node_SingularisDeclareDependency::ValidateNodeDuringCompilation(FCompile
 	UBlueprint* Blueprint = GetBlueprint();
 	if (!Blueprint || !Blueprint->ParentClass || !Blueprint->ParentClass->IsChildOf(USingularisCombine::StaticClass()))
 		MessageLog.Error(TEXT("@0 必须位于 USingularisCombine 派生蓝图中"), this);
-	if (!ComponentClass)
-		MessageLog.Error(TEXT("@0 的组件类未设置"), this);
+
+	const UEdGraphPin* ScopePin = FindPin(GetScopePinName());
+	const UEdGraphPin* ClassPin = FindPin(GetComponentClassPinName());
+	if (!ScopePin || (!ScopePin->LinkedTo.Num() && ScopePin->DefaultValue.IsEmpty()))
+		MessageLog.Error(TEXT("@0 的作用域未配置"), this);
+	if (!ClassPin || (!ClassPin->LinkedTo.Num() && !ClassPin->DefaultObject))
+		MessageLog.Error(TEXT("@0 的组件类未配置"), this);
+
+	// 连接的配置值编译期不可知，不会被写入 CDO；声明应为静态配置
+	if (ScopePin && ClassPin && (ScopePin->LinkedTo.Num() > 0 || ClassPin->LinkedTo.Num() > 0))
+		MessageLog.Warning(TEXT("@0 的作用域或组件类被连接，该声明不会写入 CDO（声明应为静态配置）"), this);
 }
 
 void UK2Node_SingularisDeclareDependency::GetMenuActions(FBlueprintActionDatabaseRegistrar& ActionRegistrar) const
