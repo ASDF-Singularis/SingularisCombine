@@ -74,7 +74,7 @@ FText UK2Node_SingularisDeclareDependency::GetTooltipText() const
 
 FLinearColor UK2Node_SingularisDeclareDependency::GetNodeTitleColor() const
 {
-	return FLinearColor(0.8f, 0.4f, 1.0f);
+	return FLinearColor(1.0f, 1.0f, 1.0f);
 }
 
 void UK2Node_SingularisDeclareDependency::ValidateNodeDuringCompilation(FCompilerResultsLog& MessageLog) const
