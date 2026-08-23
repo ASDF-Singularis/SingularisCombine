@@ -20,45 +20,48 @@ class UActorComponent;
 class FSingularisCombineDependencyRegistry
 {
 public:
-    static FSingularisCombineDependencyRegistry& Get()
-    {
-        static FSingularisCombineDependencyRegistry Instance;
-        return Instance;
-    }
+	static FSingularisCombineDependencyRegistry& Get()
+	{
+		static FSingularisCombineDependencyRegistry Instance;
+		return Instance;
+	}
 
-    void RegisterDependency(
-        UClass* StrategyClass,
-        ESingularisCombineDependencyScope Scope,
-        TSubclassOf<UActorComponent> ComponentClass)
-    {
-        if (!StrategyClass || !ComponentClass)
-            return;
+	void RegisterDependency(
+		UClass* StrategyClass,
+		ESingularisCombineDependencyScope Scope,
+		TSubclassOf<UActorComponent> ComponentClass
+	)
+	{
+		if (!StrategyClass || !ComponentClass)
+			return;
 
-        FScopeLock Lock(&CriticalSection);
-        TMap<ESingularisCombineDependencyScope, FSingularisCombineDependencyList>& ScopeMap = Registry.FindOrAdd(
-            StrategyClass);
-        ScopeMap.FindOrAdd(Scope).Classes.AddUnique(ComponentClass);
-    }
+		FScopeLock Lock(&CriticalSection);
+		TMap<ESingularisCombineDependencyScope, FSingularisCombineDependencyList>& ScopeMap = Registry.FindOrAdd(
+			StrategyClass
+		);
+		ScopeMap.FindOrAdd(Scope).Classes.AddUnique(ComponentClass);
+	}
 
-    const TMap<ESingularisCombineDependencyScope, FSingularisCombineDependencyList>* FindDeclaredClasses(
-        UClass* StrategyClass) const
-    {
-        if (!StrategyClass)
-            return nullptr;
+	const TMap<ESingularisCombineDependencyScope, FSingularisCombineDependencyList>* FindDeclaredClasses(
+		UClass* StrategyClass
+	) const
+	{
+		if (!StrategyClass)
+			return nullptr;
 
-        FScopeLock Lock(&CriticalSection);
-        return Registry.Find(StrategyClass);
-    }
+		FScopeLock Lock(&CriticalSection);
+		return Registry.Find(StrategyClass);
+	}
 
-    void Clear()
-    {
-        FScopeLock Lock(&CriticalSection);
-        Registry.Empty();
-    }
+	void Clear()
+	{
+		FScopeLock Lock(&CriticalSection);
+		Registry.Empty();
+	}
 
 private:
-    FSingularisCombineDependencyRegistry() = default;
+	FSingularisCombineDependencyRegistry() = default;
 
-    mutable FCriticalSection CriticalSection;
-    TMap<UClass*, TMap<ESingularisCombineDependencyScope, FSingularisCombineDependencyList>> Registry;
+	mutable FCriticalSection CriticalSection;
+	TMap<UClass*, TMap<ESingularisCombineDependencyScope, FSingularisCombineDependencyList>> Registry;
 };

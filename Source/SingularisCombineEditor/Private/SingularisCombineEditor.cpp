@@ -33,9 +33,7 @@ void FSingularisCombineEditorModule::ShutdownModule()
 		IAssetTools& AssetTools = FModuleManager::GetModuleChecked<FAssetToolsModule>("AssetTools").Get();
 
 		for (auto Action : CreatedAssetTypeActions)
-		{
 			AssetTools.UnregisterAssetTypeActions(Action.ToSharedRef());
-		}
 	}
 
 	CreatedAssetTypeActions.Empty();

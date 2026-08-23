@@ -123,8 +123,10 @@ USingularisCombine::GetDeclaredComponentClasses() const
 			FSingularisCombineDependencyRegistry::Get().FindDeclaredClasses(Class))
 		{
 			for (const auto& Pair : *Found)
+			{
 				for (const TSubclassOf<UActorComponent>& DepClass : Pair.Value.Classes)
 					Result.FindOrAdd(Pair.Key).Classes.AddUnique(DepClass);
+			}
 		}
 	}
 
@@ -132,8 +134,10 @@ USingularisCombine::GetDeclaredComponentClasses() const
 	if (const USingularisCombine* const CDO = GetClass()->GetDefaultObject<USingularisCombine>())
 	{
 		for (const auto& Pair : CDO->DeclaredComponents)
+		{
 			for (const TSubclassOf<UActorComponent>& DepClass : Pair.Value.Classes)
 				Result.FindOrAdd(Pair.Key).Classes.AddUnique(DepClass);
+		}
 	}
 
 	return Result;
