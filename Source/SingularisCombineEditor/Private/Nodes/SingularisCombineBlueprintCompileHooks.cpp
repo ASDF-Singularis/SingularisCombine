@@ -142,8 +142,18 @@ void FSingularisCombineBlueprintCompileHook::HandleCDOCompiled(
 	);
 
 	// 4) 整体替换该策略类在注册表中的声明集合（唯一真相源，幂等）
+	UClass* const TargetClass = const_cast<UClass*>(Blueprint->GeneratedClass.Get());
+	UE_LOG(
+		LogSingularisCombine,
+		Display,
+		TEXT("HandleCDOCompiled：写入注册表（写入指针=%p, GetPathName=%s, 作用域=%d）"),
+		TargetClass,
+		*TargetClass->GetPathName(),
+		Backfilled.Num()
+	);
+
 	FSingularisCombineDependencyRegistry::Get().ReplaceDeclaredClasses(
-		const_cast<UClass*>(GeneratedClass),
+		TargetClass,
 		MoveTemp(Backfilled)
 	);
 }

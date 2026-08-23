@@ -210,10 +210,7 @@ USingularisCombineComponent::GetDeclaredComponentClasses(UClass* StrategyClass)
 	TMap<ESingularisCombineDependencyScope, FSingularisCombineDependencyList> Result;
 
 	if (!StrategyClass)
-	{
-		UE_LOG(LogSingularisCombine, Warning, TEXT("GetDeclaredComponentClasses：StrategyClass 为空"));
 		return Result;
-	}
 
 	// 1) 沿继承链聚合所有祖先的注册表声明（含自身）：子策略继承父策略的全部声明
 	for (UClass* Class = StrategyClass; Class; Class = Class->GetSuperClass())
@@ -221,14 +218,6 @@ USingularisCombineComponent::GetDeclaredComponentClasses(UClass* StrategyClass)
 		if (const TMap<ESingularisCombineDependencyScope, FSingularisCombineDependencyList>* const Found =
 			FSingularisCombineDependencyRegistry::Get().FindDeclaredClasses(Class))
 		{
-			UE_LOG(
-				LogSingularisCombine,
-				Display,
-				TEXT("GetDeclaredComponentClasses：注册表命中类 %s（%d 个作用域）"),
-				*GetNameSafe(Class),
-				Found->Num()
-			);
-
 			for (const auto& Pair : *Found)
 			{
 				for (const TSubclassOf<UActorComponent>& DepClass : Pair.Value.Classes)
@@ -236,14 +225,6 @@ USingularisCombineComponent::GetDeclaredComponentClasses(UClass* StrategyClass)
 			}
 		}
 	}
-
-	UE_LOG(
-		LogSingularisCombine,
-		Display,
-		TEXT("GetDeclaredComponentClasses：策略类 %s 聚合得到 %d 个作用域声明"),
-		*GetNameSafe(StrategyClass),
-		Result.Num()
-	);
 
 	return Result;
 }

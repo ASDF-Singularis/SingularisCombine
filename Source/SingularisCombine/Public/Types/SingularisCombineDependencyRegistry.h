@@ -22,11 +22,8 @@ class UActorComponent;
 class FSingularisCombineDependencyRegistry
 {
 public:
-	static FSingularisCombineDependencyRegistry& Get()
-	{
-		static FSingularisCombineDependencyRegistry Instance;
-		return Instance;
-	}
+	/** 进程级单例访问（由 SingularisCombine 运行时模块导出，跨模块共享同一实例） */
+	SINGULARISCOMBINE_API static FSingularisCombineDependencyRegistry& Get();
 
 	/**
 	 * 追加单条声明依赖（原生宏路径使用，幂等去重）
