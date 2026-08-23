@@ -5,6 +5,7 @@
 #include <Engine/Blueprint.h>
 #include <UObject/UObjectGlobals.h>
 
+#include "SingularisCombine.h"
 #include "Nodes/K2Node_SingularisDeclareDependency.h"
 #include "Objects/SingularisCombineBase.h"
 #include "Types/SingularisCombineDependencyList.h"
@@ -54,11 +55,20 @@ void FSingularisCombineBlueprintCompileHook::HandleCDOCompiled(
 	if (!Blueprint)
 		return;
 
+	UE_LOG(
+		LogSingularisCombine,
+		Display,
+		TEXT("HandleCDOCompiled：开始扫图回填（蓝图=%s, 类=%s）"),
+		*GetNameSafe(Blueprint),
+		*GetNameSafe(GeneratedClass)
+	);
+
 	// 3) 扫描所有图中的声明节点，按 (Scope, Class) 去重收集
 	TArray<UEdGraph*> AllGraphs;
 	Blueprint->GetAllGraphs(AllGraphs);
 
 	TMap<ESingularisCombineDependencyScope, FSingularisCombineDependencyList> Backfilled;
+	auto NodeCount = 0;
 	for (const UEdGraph* Graph : AllGraphs)
 	{
 		if (!Graph)
@@ -71,30 +81,65 @@ void FSingularisCombineBlueprintCompileHook::HandleCDOCompiled(
 			if (!Node)
 				continue;
 
+			++NodeCount;
+
 			// 仅收录未连接的静态声明（连接引脚的动态值编译期不可知，不入注册表）
 			const UEdGraphPin* ScopePin = Node->FindPin(UK2Node_SingularisDeclareDependency::GetScopePinName());
 			const UEdGraphPin* ClassPin = Node->FindPin(
 				UK2Node_SingularisDeclareDependency::GetComponentClassPinName()
 			);
 			if (!ScopePin || !ClassPin || ScopePin->LinkedTo.Num() > 0 || ClassPin->LinkedTo.Num() > 0)
+			{
+				UE_LOG(
+					LogSingularisCombine,
+					Warning,
+					TEXT("HandleCDOCompiled：跳过已连接的声明节点（节点=%s）"),
+					*GetNameSafe(Node)
+				);
 				continue;
+			}
 
 			// 组件类未配置或作用域枚举名无效时跳过该节点
 			UClass* ComponentType = Cast<UClass>(ClassPin->DefaultObject);
 			if (!ComponentType)
+			{
+				UE_LOG(
+					LogSingularisCombine,
+					Warning,
+					TEXT("HandleCDOCompiled：声明节点未配置组件类（节点=%s）"),
+					*GetNameSafe(Node)
+				);
 				continue;
+			}
 
 			const int64 ScopeValue = StaticEnum<ESingularisCombineDependencyScope>()->GetValueByName(
 				FName(ScopePin->DefaultValue)
 			);
 			if (ScopeValue == INDEX_NONE)
+			{
+				UE_LOG(
+					LogSingularisCombine,
+					Warning,
+					TEXT("HandleCDOCompiled：声明节点作用域枚举值无效（节点=%s, DefaultValue=%s）"),
+					*GetNameSafe(Node),
+					*ScopePin->DefaultValue
+				);
 				continue;
+			}
 
 			Backfilled.FindOrAdd(static_cast<ESingularisCombineDependencyScope>(ScopeValue)).Classes.AddUnique(
 				ComponentType
 			);
 		}
 	}
+
+	UE_LOG(
+		LogSingularisCombine,
+		Display,
+		TEXT("HandleCDOCompiled：扫描完成（节点=%d, 作用域=%d）"),
+		NodeCount,
+		Backfilled.Num()
+	);
 
 	// 4) 整体替换该策略类在注册表中的声明集合（唯一真相源，幂等）
 	FSingularisCombineDependencyRegistry::Get().ReplaceDeclaredClasses(

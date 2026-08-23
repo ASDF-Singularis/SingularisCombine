@@ -3,6 +3,7 @@
 #include <GameplayTagAssetInterface.h>
 #include <Engine/World.h>
 
+#include "SingularisCombine.h"
 #include "Objects/SingularisCombineBase.h"
 #include "Types/SingularisCombineComponentType.h"
 #include "Types/SingularisCombineDependencyRegistry.h"
@@ -123,7 +124,19 @@ void USingularisCombineComponent::ResolveDependencies(const FSingularisCombineCo
 		if (!Combine)
 			continue;
 
-		for (const auto& Pair : GetDeclaredComponentClasses(Combine->GetClass()))
+		const TMap<ESingularisCombineDependencyScope, FSingularisCombineDependencyList> Declared =
+			GetDeclaredComponentClasses(Combine->GetClass());
+
+		UE_LOG(
+			LogSingularisCombine,
+			Verbose,
+			TEXT("[%s] ResolveDependencies：策略 %s 声明 %d 个作用域"),
+			*GetNameSafe(GetOwner()),
+			*GetNameSafe(Combine->GetClass()),
+			Declared.Num()
+		);
+
+		for (const auto& Pair : Declared)
 		{
 			TSet<TSubclassOf<UActorComponent>>& TypeSet = AggregatedDeps.FindOrAdd(Pair.Key);
 			for (const TSubclassOf<UActorComponent>& DepClass : Pair.Value.Classes)
@@ -135,14 +148,32 @@ void USingularisCombineComponent::ResolveDependencies(const FSingularisCombineCo
 	}
 
 	if (AggregatedDeps.IsEmpty())
+	{
+		UE_LOG(
+			LogSingularisCombine,
+			Verbose,
+			TEXT("[%s] ResolveDependencies：管线策略无任何声明依赖（缓存为空）"),
+			*GetNameSafe(GetOwner())
+		);
 		return;
+	}
 
 	// 2) 将每个作用域映射到 Context 中的 Actor，查找并缓存到对应作用域槽位
 	for (const auto& Pair : AggregatedDeps)
 	{
 		AActor* const ScopeActor = GetContextActor(Context, Pair.Key);
 		if (!ScopeActor || Pair.Value.IsEmpty())
+		{
+			UE_LOG(
+				LogSingularisCombine,
+				Warning,
+				TEXT("[%s] ResolveDependencies：作用域 %d 的 Actor 缺失或声明为空（Actor=%s）"),
+				*GetNameSafe(GetOwner()),
+				static_cast<int32>(Pair.Key),
+				*GetNameSafe(ScopeActor)
+			);
 			continue;
+		}
 
 		TMap<TSubclassOf<UActorComponent>, TWeakObjectPtr<UActorComponent>>& ScopeCache = CachedDependencies.FindOrAdd(
 			Pair.Key
@@ -151,6 +182,16 @@ void USingularisCombineComponent::ResolveDependencies(const FSingularisCombineCo
 		{
 			if (UActorComponent* const Found = ScopeActor->GetComponentByClass(DepClass))
 				ScopeCache.Add(DepClass, Found);
+			else
+				UE_LOG(
+				LogSingularisCombine,
+				Warning,
+				TEXT("[%s] ResolveDependencies：作用域 %d 的 Actor %s 上未找到声明组件 %s"),
+				*GetNameSafe(GetOwner()),
+				static_cast<int32>(Pair.Key),
+				*GetNameSafe(ScopeActor),
+				*GetNameSafe(DepClass)
+			);
 		}
 	}
 }
@@ -160,12 +201,26 @@ USingularisCombineComponent::GetDeclaredComponentClasses(UClass* StrategyClass)
 {
 	TMap<ESingularisCombineDependencyScope, FSingularisCombineDependencyList> Result;
 
+	if (!StrategyClass)
+	{
+		UE_LOG(LogSingularisCombine, Warning, TEXT("GetDeclaredComponentClasses：StrategyClass 为空"));
+		return Result;
+	}
+
 	// 1) 沿继承链聚合所有祖先的注册表声明（含自身）：子策略继承父策略的全部声明
 	for (UClass* Class = StrategyClass; Class; Class = Class->GetSuperClass())
 	{
 		if (const TMap<ESingularisCombineDependencyScope, FSingularisCombineDependencyList>* const Found =
 			FSingularisCombineDependencyRegistry::Get().FindDeclaredClasses(Class))
 		{
+			UE_LOG(
+				LogSingularisCombine,
+				Verbose,
+				TEXT("GetDeclaredComponentClasses：注册表命中类 %s（%d 个作用域）"),
+				*GetNameSafe(Class),
+				Found->Num()
+			);
+
 			for (const auto& Pair : *Found)
 			{
 				for (const TSubclassOf<UActorComponent>& DepClass : Pair.Value.Classes)
@@ -173,6 +228,14 @@ USingularisCombineComponent::GetDeclaredComponentClasses(UClass* StrategyClass)
 			}
 		}
 	}
+
+	UE_LOG(
+		LogSingularisCombine,
+		Verbose,
+		TEXT("GetDeclaredComponentClasses：策略类 %s 聚合得到 %d 个作用域声明"),
+		*GetNameSafe(StrategyClass),
+		Result.Num()
+	);
 
 	return Result;
 }
@@ -183,7 +246,10 @@ UActorComponent* USingularisCombineComponent::GetDeclaredComponent(
 ) const
 {
 	if (!ComponentClass)
+	{
+		UE_LOG(LogSingularisCombine, Warning, TEXT("GetDeclaredComponent：ComponentClass 为空"));
 		return nullptr;
+	}
 
 	// 1) 从缓存中查找作用域 → 组件类型映射
 	if (const TMap<TSubclassOf<UActorComponent>, TWeakObjectPtr<UActorComponent>>* const ScopeCache = CachedDependencies
@@ -195,7 +261,38 @@ UActorComponent* USingularisCombineComponent::GetDeclaredComponent(
 		{
 			if (Found->IsValid())
 				return Found->Get();
+
+			UE_LOG(
+				LogSingularisCombine,
+				Warning,
+				TEXT("[%s] GetDeclaredComponent：缓存命中但弱引用失效（Scope=%d, Class=%s）"),
+				*GetNameSafe(GetOwner()),
+				static_cast<int32>(Scope),
+				*GetNameSafe(ComponentClass)
+			);
 		}
+		else
+		{
+			UE_LOG(
+				LogSingularisCombine,
+				Warning,
+				TEXT("[%s] GetDeclaredComponent：作用域缓存中未找到声明类型（Scope=%d, Class=%s）"),
+				*GetNameSafe(GetOwner()),
+				static_cast<int32>(Scope),
+				*GetNameSafe(ComponentClass)
+			);
+		}
+	}
+	else
+	{
+		UE_LOG(
+			LogSingularisCombine,
+			Warning,
+			TEXT("[%s] GetDeclaredComponent：作用域缓存槽位不存在（Scope=%d, Class=%s）"),
+			*GetNameSafe(GetOwner()),
+			static_cast<int32>(Scope),
+			*GetNameSafe(ComponentClass)
+		);
 	}
 
 	return nullptr;
@@ -251,10 +348,29 @@ USingularisCombineComponent* USingularisCombineComponent::GetFromStrategy(const 
 {
 	// 1) CDO 与空值保护：CDO 的 Outer 为其 UClass，非组件实例
 	if (!Strategy || Strategy->HasAnyFlags(RF_ClassDefaultObject))
+	{
+		UE_LOG(
+			LogSingularisCombine,
+			Warning,
+			TEXT("GetFromStrategy：Strategy 为空或为 CDO（Strategy=%s）"),
+			*GetNameSafe(Strategy)
+		);
 		return nullptr;
+	}
 
 	// 2) 策略作为 UObject 子对象挂载于组件，Outer 即为化合组件
-	return Cast<USingularisCombineComponent>(Strategy->GetOuter());
+	USingularisCombineComponent* const OwnerComponent = Cast<USingularisCombineComponent>(Strategy->GetOuter());
+	if (!OwnerComponent)
+	{
+		UE_LOG(
+			LogSingularisCombine,
+			Warning,
+			TEXT("GetFromStrategy：Strategy 的 Outer 非化合组件（Strategy=%s, Outer=%s）"),
+			*GetNameSafe(Strategy),
+			*GetNameSafe(Strategy->GetOuter())
+		);
+	}
+	return OwnerComponent;
 }
 
 void USingularisCombineComponent::SetPipeline(const FSingularisCombinePipeline& InPipeline)

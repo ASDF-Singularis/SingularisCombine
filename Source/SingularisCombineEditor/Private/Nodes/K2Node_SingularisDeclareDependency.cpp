@@ -4,6 +4,7 @@
 #include <BlueprintNodeSpawner.h>
 #include <EdGraphSchema_K2.h>
 #include <K2Node_CallFunction.h>
+#include <K2Node_Self.h>
 #include <KismetCompiler.h>
 #include <EdGraph/EdGraph.h>
 #include <Kismet2/BlueprintEditorUtils.h>
@@ -98,11 +99,16 @@ void UK2Node_SingularisDeclareDependency::ExpandNode(FKismetCompilerContext& Com
 	);
 	CallGetFromStrategy->AllocateDefaultPins();
 
-	// 3) 迁移 self 上下文：本节点隐藏 self 引脚 → GetFromStrategy 入参「Strategy」
-	UEdGraphPin* NodeSelfPin = FindPin(UEdGraphSchema_K2::PN_Self);
+	// 3) 注入蓝图对象 self 到 GetFromStrategy 的「Strategy」入参
+	//    原节点的隐藏 self 引脚不会被 MovePinLinksToIntermediate 迁移到普通参数（隐式链接不可迁移）；
+	//    用标准 UK2Node_Self 中间节点显式获取蓝图对象实例，再连接到静态函数入参
+	UK2Node_Self* SelfNode = CompilerContext.SpawnIntermediateNode<UK2Node_Self>(this, SourceGraph);
+	SelfNode->AllocateDefaultPins();
+
+	const UEdGraphSchema_K2* const Schema = CompilerContext.GetSchema();
 	UEdGraphPin* StrategyArgPin = CallGetFromStrategy->FindPinChecked(TEXT("Strategy"));
-	if (NodeSelfPin)
-		CompilerContext.MovePinLinksToIntermediate(*NodeSelfPin, *StrategyArgPin);
+	UEdGraphPin* SelfOutPin = SelfNode->FindPinChecked(UEdGraphSchema_K2::PSC_Self);
+	Schema->TryCreateConnection(SelfOutPin, StrategyArgPin);
 
 	UEdGraphPin* ComponentOutPin = CallGetFromStrategy->GetReturnValuePin();
 
@@ -120,7 +126,7 @@ void UK2Node_SingularisDeclareDependency::ExpandNode(FKismetCompilerContext& Com
 
 	// 5) self 链路：第一步输出的 Component 连接到第二步的 self 引脚
 	UEdGraphPin* GetDeclaredSelfPin = CallGetDeclared->FindPinChecked(UEdGraphSchema_K2::PN_Self);
-	GetDeclaredSelfPin->MakeLinkTo(ComponentOutPin);
+	Schema->TryCreateConnection(ComponentOutPin, GetDeclaredSelfPin);
 
 	// 6) 写入参数字面量：连接则迁移动态值，未连接则拷贝配置默认值
 	UEdGraphPin* ScopeArg = CallGetDeclared->FindPinChecked(TEXT("Scope"));
