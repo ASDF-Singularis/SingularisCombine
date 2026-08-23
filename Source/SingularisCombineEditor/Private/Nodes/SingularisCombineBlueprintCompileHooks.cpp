@@ -142,7 +142,7 @@ void FSingularisCombineBlueprintCompileHook::HandleCDOCompiled(
 	);
 
 	// 4) 整体替换该策略类在注册表中的声明集合（唯一真相源，幂等）
-	UClass* const TargetClass = const_cast<UClass*>(Blueprint->GeneratedClass.Get());
+	const auto TargetClass = Blueprint->GeneratedClass.Get();
 	UE_LOG(
 		LogSingularisCombine,
 		Display,
