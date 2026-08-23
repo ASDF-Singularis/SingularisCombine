@@ -9,9 +9,9 @@
 class UActorComponent;
 
 /**
- * 声明依赖 K2Node（纯声明节点）
- * 无执行/数据引脚，仅作为编译期元数据载体。
- * 编辑器面板配置作用域 + 组件类 + 名字；编译期校验宿主蓝图为 USingularisCombine 派生。
+ * 声明依赖 K2Node（声明与获取一体）
+ * 自持作用域 + 组件类配置，输出引脚类型由组件类自身推导，声明即使用点，无跨节点匹配环节。
+ * 编译期 hook 扫描节点写入 CDO；ExpandNode 展开为对 USingularisCombine::GetDeclaredComponent(Scope, Class) 的纯函数调用。
  */
 UCLASS()
 class UK2Node_SingularisDeclareDependency : public UK2Node
@@ -25,10 +25,8 @@ public:
 	UPROPERTY(EditDefaultsOnly, Category = "SingularisCombine|声明")
 	TSubclassOf<UActorComponent> ComponentClass = nullptr;
 
-	UPROPERTY(EditDefaultsOnly, Category = "SingularisCombine|声明")
-	FName DependencyName = NAME_None;
-
 	virtual void AllocateDefaultPins() override;
+	virtual void ExpandNode(FKismetCompilerContext& CompilerContext, UEdGraph* SourceGraph) override;
 	virtual FText GetNodeTitle(ENodeTitleType::Type TitleType) const override;
 	virtual FText GetTooltipText() const override;
 	virtual FLinearColor GetNodeTitleColor() const override;

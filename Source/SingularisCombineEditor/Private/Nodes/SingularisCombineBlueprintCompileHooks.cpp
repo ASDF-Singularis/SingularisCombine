@@ -57,7 +57,7 @@ void FSingularisCombineBlueprintCompileHook::HandleCDOCompiled(
 		Graph->GetNodesOfClass<UK2Node_SingularisDeclareDependency>(Found);
 		for (const UK2Node_SingularisDeclareDependency* Node : Found)
 		{
-			if (!Node || !Node->ComponentClass || Node->DependencyName.IsNone())
+			if (!Node || !Node->ComponentClass)
 				continue;
 			Backfilled.FindOrAdd(Node->Scope).Classes.AddUnique(Node->ComponentClass);
 		}
