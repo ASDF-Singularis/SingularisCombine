@@ -3,6 +3,7 @@
 #include <AssetToolsModule.h>
 
 #include "Factories/SingularisCombineFactory.h"
+#include "Nodes/SingularisCombineBlueprintCompileHooks.h"
 
 #define LOCTEXT_NAMESPACE "FSingularisCombineEditorModule"
 
@@ -19,10 +20,14 @@ void FSingularisCombineEditorModule::StartupModule()
 		AssetTools,
 		MakeShareable(new FAssetTypeActions_SingularisCombine(SingularisPluginCategory))
 	);
+
+	FSingularisCombineBlueprintCompileHook::Register(BlueprintCompileHandle);
 }
 
 void FSingularisCombineEditorModule::ShutdownModule()
 {
+	FSingularisCombineBlueprintCompileHook::Unregister(BlueprintCompileHandle);
+
 	if (FModuleManager::Get().IsModuleLoaded("AssetTools"))
 	{
 		IAssetTools& AssetTools = FModuleManager::GetModuleChecked<FAssetToolsModule>("AssetTools").Get();

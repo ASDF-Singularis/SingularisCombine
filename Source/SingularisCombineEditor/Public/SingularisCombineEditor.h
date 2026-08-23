@@ -15,5 +15,8 @@ public:
 private:
 	TArray<TSharedPtr<IAssetTypeActions>> CreatedAssetTypeActions{};
 
+	/** 蓝图编译 hook 注册句柄 */
+	FDelegateHandle BlueprintCompileHandle{};
+
 	void RegisterAssetTypeAction(IAssetTools& AssetTools, const TSharedRef<IAssetTypeActions>& Action);
 };
