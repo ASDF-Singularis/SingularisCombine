@@ -49,7 +49,7 @@ void UK2Node_SingularisDeclareDependency::ValidateNodeDuringCompilation(FCompile
 	if (Blueprint && !DependencyName.IsNone())
 	{
 		TArray<UEdGraph*> Graphs;
-		FBlueprintEditorUtils::GetAllGraphs(Blueprint, Graphs);
+		Blueprint->GetAllGraphs(Graphs);
 
 		auto MatchCount = 0;
 		for (const UEdGraph* Graph : Graphs)

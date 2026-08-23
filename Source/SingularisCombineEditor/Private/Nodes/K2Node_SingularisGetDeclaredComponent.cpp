@@ -4,8 +4,9 @@
 #include <BlueprintNodeSpawner.h>
 #include <EdGraphSchema_K2.h>
 #include <K2Node_CallFunction.h>
+#include <KismetCompiler.h>
 #include <EdGraph/EdGraph.h>
-#include <Kismet/BlueprintEditorUtils.h>
+#include <Kismet2/BlueprintEditorUtils.h>
 #include <Kismet2/CompilerResultsLog.h>
 
 #include "Nodes/K2Node_SingularisDeclareDependency.h"
@@ -49,7 +50,7 @@ const UK2Node_SingularisDeclareDependency* UK2Node_SingularisGetDeclaredComponen
 		return nullptr;
 
 	TArray<UEdGraph*> Graphs;
-	FBlueprintEditorUtils::GetAllGraphs(Blueprint, Graphs);
+	Blueprint->GetAllGraphs(Graphs);
 
 	for (const UEdGraph* Graph : Graphs)
 	{
@@ -100,11 +101,11 @@ void UK2Node_SingularisGetDeclaredComponent::ExpandNode(FKismetCompilerContext& 
 	}
 
 	UK2Node_CallFunction* CallGet = CompilerContext.SpawnIntermediateNode<UK2Node_CallFunction>(this, SourceGraph);
-	CallGet->FunctionReference.SetSelfMemberFunction(
-		USingularisCombine::StaticClass(),
-		GET_FUNCTION_NAME_CHECKED(USingularisCombine, GetDeclaredComponent)
+	// GetDeclaredComponent 为基类 protected 函数，只能按名经反射解析（GET_FUNCTION_NAME_CHECKED 受访问限制不可用）；
+	// SetFromFunction 依据 BlueprintPure 元数据自动置为纯节点，并解析为 self 上下文调用
+	CallGet->SetFromFunction(
+		USingularisCombine::StaticClass()->FindFunctionByName(FName(TEXT("GetDeclaredComponent")))
 	);
-	CallGet->bIsPureFunc = true;
 	CallGet->AllocateDefaultPins();
 
 	// Target = self（策略实例）：迁移本节点 self 引脚连接到调用节点

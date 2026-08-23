@@ -1,9 +1,11 @@
 #pragma once
 
 #include <CoreMinimal.h>
+#include <UObject/ObjectCompileContext.h>
 #include <UObject/ObjectMacros.h>
 
 class UBlueprint;
+class UObject;
 class FDelegateHandle;
 
 /**
@@ -16,5 +18,5 @@ class FSingularisCombineBlueprintCompileHook
 public:
 	static void Register(FDelegateHandle& OutHandle);
 	static void Unregister(FDelegateHandle& Handle);
-	static void HandleBlueprintCompiled(UBlueprint* Blueprint);
+	static void HandleCDOCompiled(UObject* CDO, const FObjectPostCDOCompiledContext& Context);
 };
