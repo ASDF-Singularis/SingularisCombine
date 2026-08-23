@@ -5,6 +5,7 @@
 #include <Net/UnrealNetwork.h>
 
 #include "Interfaces/SingularisCombineDependencyProvider.h"
+#include "Types/SingularisCombineDependencyRegistry.h"
 #include "Types/SingularisCombineTransientPayload.h"
 
 UWorld* USingularisCombine::GetWorld() const
@@ -108,6 +109,33 @@ UActorComponent* USingularisCombine::GetDeclaredComponent(
 		return Provider->GetDeclaredComponent(Scope, ComponentClass);
 
 	return nullptr;
+}
+
+const TMap<ESingularisCombineDependencyScope, FSingularisCombineDependencyList>&
+USingularisCombine::GetDeclaredComponentClasses() const
+{
+	if (bDeclaredClassesCached)
+		return CachedDeclaredClasses;
+
+	// 1) 沿继承链聚合所有祖先的原生注册表声明（含自身）：子策略继承父策略的全部声明
+	for (UClass* Class = GetClass(); Class; Class = Class->GetSuperClass())
+	{
+		if (const TMap<ESingularisCombineDependencyScope, FSingularisCombineDependencyList>* const Found =
+			FSingularisCombineDependencyRegistry::Get().FindDeclaredClasses(Class))
+		{
+			for (const auto& Pair : *Found)
+				for (const TSubclassOf<UActorComponent>& DepClass : Pair.Value.Classes)
+					CachedDeclaredClasses.FindOrAdd(Pair.Key).Classes.AddUnique(DepClass);
+		}
+	}
+
+	// 2) 合并自身 CDO 声明（蓝图回填路径）
+	for (const auto& Pair : DeclaredComponents)
+		for (const TSubclassOf<UActorComponent>& DepClass : Pair.Value.Classes)
+			CachedDeclaredClasses.FindOrAdd(Pair.Key).Classes.AddUnique(DepClass);
+
+	bDeclaredClassesCached = true;
+	return CachedDeclaredClasses;
 }
 
 void USingularisCombine::SetDependencyProvider(ISingularisCombineDependencyProvider* Provider)

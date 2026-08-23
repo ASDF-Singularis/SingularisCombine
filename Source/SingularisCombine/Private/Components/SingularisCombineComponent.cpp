@@ -125,7 +125,7 @@ void USingularisCombineComponent::ResolveDependencies(const FSingularisCombineCo
 		if (!Combine)
 			continue;
 
-		for (const auto& Pair : Combine->DeclaredComponents)
+		for (const auto& Pair : Combine->GetDeclaredComponentClasses())
 		{
 			TSet<TSubclassOf<UActorComponent>>& TypeSet = AggregatedDeps.FindOrAdd(Pair.Key);
 			for (const TSubclassOf<UActorComponent>& DepClass : Pair.Value.Classes)
@@ -189,12 +189,15 @@ bool USingularisCombineComponent::AreDependenciesSatisfied(
 	if (!Strategy)
 		return true;
 
+	const TMap<ESingularisCombineDependencyScope, FSingularisCombineDependencyList>& Declared =
+		Strategy->GetDeclaredComponentClasses();
+
 	// 1) 空声明视为无条件满足
-	if (Strategy->DeclaredComponents.IsEmpty())
+	if (Declared.IsEmpty())
 		return true;
 
 	// 2) 逐作用域检查声明类型是否全部命中缓存
-	for (const auto& Pair : Strategy->DeclaredComponents)
+	for (const auto& Pair : Declared)
 	{
 		const TArray<TSubclassOf<UActorComponent>>& DeclaredTypes = Pair.Value.Classes;
 		if (DeclaredTypes.IsEmpty())
@@ -205,10 +208,8 @@ bool USingularisCombineComponent::AreDependenciesSatisfied(
 			return false;
 
 		// 4) 作用域缓存槽位或任一声明类型缺失 → 不满足
-		const TMap<TSubclassOf<UActorComponent>, TWeakObjectPtr<UActorComponent>>* const ScopeCache = CachedDependencies
-			.Find(
-				Pair.Key
-			);
+		const TMap<TSubclassOf<UActorComponent>, TWeakObjectPtr<UActorComponent>>* const ScopeCache =
+			CachedDependencies.Find(Pair.Key);
 		if (!ScopeCache)
 			return false;
 

@@ -44,20 +44,6 @@ public:
 	)
 	bool bIsActive = false;
 
-	/**
-	 * 策略声明式配置的组件
-	 * 按作用域（Instigator/Avatar/Target）结构化声明；评估前由化合组件预解析并缓存。
-	 * 声明未全部满足时，不进入 CanReaction，直接走回滚路径。
-	 * 空声明视为无条件满足。
-	 */
-	UPROPERTY(
-		EditDefaultsOnly,
-		BlueprintReadOnly,
-		Category = "SingularisCombine|引力奇点化合|参数",
-		meta = (DisplayName = "声明组件")
-	)
-	TMap<ESingularisCombineDependencyScope, FSingularisCombineDependencyList> DeclaredComponents{};
-
 #pragma endregion
 
 #pragma region UObject Interface
@@ -82,34 +68,12 @@ public:
 	bool IsActive() const { return bIsActive; }
 
 	/**
-	 * 获取声明式配置的组件实例（预缓存）
-	 * 内部委托注入的依赖查询提供者；必须在化合组件的 ResolveDependencies(Context) 之后调用。
-	 * @param Scope           依赖作用域（Instigator / Avatar / Target）
-	 * @param ComponentClass  声明在 DeclaredComponents 中的组件类型
-	 * @return 预缓存的组件引用，未找到或未声明时返回 nullptr
+	 * 归一声明依赖集合
+	 * 沿继承链查询全局注册表（原生声明宏写入），并合并自身 CDO 声明（蓝图回填）。
+	 * 结果惰性缓存于实例，运行期不可变；供 ResolveDependencies 聚合、AreDependenciesSatisfied 门控共用。
 	 */
-	UFUNCTION(
-		BlueprintPure,
-		Category = "SingularisCombine|引力奇点化合|State",
-		meta = (DisplayName = "获取声明组件", DeterminesOutputType = "ComponentClass")
-	)
-	UActorComponent* GetDeclaredComponent(
-		ESingularisCombineDependencyScope Scope,
-		TSubclassOf<UActorComponent> ComponentClass
-	) const;
-
-	/**
-	 * 获取声明式配置的组件实例（模板便捷版，自动转换返回类型）
-	 * 等价于 Cast<T>(GetDeclaredComponent(Scope, T::StaticClass()))，供 C++ 策略免去手动转换。
-	 * @param Scope  依赖作用域（Instigator / Avatar / Target）
-	 * @return 预缓存的组件引用，未找到或未声明时返回 nullptr
-	 */
-	template <typename T>
-	T* GetDeclaredComponent(ESingularisCombineDependencyScope Scope) const
-	{
-		static_assert(TIsDerivedFrom<T, UActorComponent>::Value, "T 必须是 UActorComponent 的派生类");
-		return Cast<T>(GetDeclaredComponent(Scope, T::StaticClass()));
-	}
+	virtual const TMap<ESingularisCombineDependencyScope, FSingularisCombineDependencyList>&
+	GetDeclaredComponentClasses() const;
 
 #pragma endregion
 
@@ -238,8 +202,48 @@ public:
 
 #pragma endregion
 
+protected:
+#pragma region State
+
+	/**
+	 * 获取声明式配置的组件实例（预缓存）
+	 * 仅宏生成的类型安全访问器与蓝图获取节点经反射调用。
+	 * 必须在化合组件 ResolveDependencies(Context) 之后调用。
+	 * @param Scope           依赖作用域（Instigator / Avatar / Target）
+	 * @param ComponentClass  声明在依赖集合中的组件类型
+	 * @return 预缓存的组件引用，未找到或未声明时返回 nullptr
+	 */
+	UFUNCTION(
+		BlueprintPure,
+		Category = "SingularisCombine|引力奇点化合|State",
+		meta = (DisplayName = "获取声明组件", DeterminesOutputType = "ComponentClass")
+	)
+	UActorComponent* GetDeclaredComponent(
+		ESingularisCombineDependencyScope Scope,
+		TSubclassOf<UActorComponent> ComponentClass
+	) const;
+
+#pragma endregion
+
 private:
 #pragma region Internal Variable
+
+	/** 友元：编辑器编译 hook 回填 CDO 声明 */
+	friend class FSingularisCombineBlueprintCompileHook;
+
+	/**
+	 * 声明式组件（收口）
+	 * 仅服务蓝图 CDO 回填路径与运行期内部读取；外部不可编辑、不可直接读写。
+	 * 原生路径下注册表为唯一真相源，本字段闲置。
+	 */
+	UPROPERTY()
+	TMap<ESingularisCombineDependencyScope, FSingularisCombineDependencyList> DeclaredComponents{};
+
+	/** 声明集合惰性缓存（GetDeclaredComponentClasses 首次调用后填充，运行期不变） */
+	mutable TMap<ESingularisCombineDependencyScope, FSingularisCombineDependencyList> CachedDeclaredClasses{};
+
+	/** 缓存是否已构建 */
+	mutable bool bDeclaredClassesCached = false;
 
 	/** 化合组件注入的依赖查询提供者（弱引用，随组件生命周期自动失效） */
 	TWeakInterfacePtr<ISingularisCombineDependencyProvider> DependencyProvider{};
