@@ -70,7 +70,7 @@
 
 **分层设计：** 采用「声明源 → 全局注册表 → 组件查询」三段式。原生类与蓝图类声明源不同，但统一写入同一份 `FSingularisCombineDependencyRegistry` 进程级单例（唯一真相源）。
 
-- **原生类（静态注册表）：** 声明宏在头文件展开为「类型安全访问器 + 静态注册器实例」，静态注册器在模块加载期向全局注册表登记 `(StaticClass, Scope, ComponentClass)`。模块加载早于任何 Gameplay 代码，注册表在评估期必然完整，规避「CDO 构造时机 vs 静态初始化时机」的排序风险。
+- **原生类（静态注册表）：** 声明宏在头文件展开为「依赖代理成员 + 兼容访问器 + 静态注册器实例」，静态注册器在模块加载期向全局注册表登记 `(StaticClass, Scope, ComponentClass)`。模块加载早于任何 Gameplay 代码，注册表在评估期必然完整，规避「CDO 构造时机 vs 静态初始化时机」的排序风险。
 - **蓝图类（编译期 hook）：** 声明节点 `DeclareDependency`（配置作用域 + 组件类，输出引脚类型由组件类推导）即声明即使用；编译期 hook（`FCoreUObjectDelegates::OnObjectPostCDOCompiled` 扫图）提取节点，按 `(Scope, Class)` 去重后调用 `FSingularisCombineDependencyRegistry::ReplaceDeclaredClasses` 整体替换该策略类的声明集合。整体替换语义保证幂等：反复编译不会累积重复声明。
 - **策略类零负担：** `USingularisCombine` 不再持有 `DeclaredComponents` 字段、`friend` 授权或依赖查询入口，只保留纯粹的化合 SPI。声明的登记、查询、缓存全部收口于化合组件，策略类不知晓组件的存在（依赖倒置，单向依赖）。
 
@@ -83,7 +83,7 @@
 - **`GetDeclaredComponent(Scope, Class)`：** BlueprintPure + `DeterminesOutputType`，供蓝图策略与声明节点展开后调用。必须在 `ResolveDependencies(Context)` 之后调用。
 - **`GetFromStrategy(Strategy)`：** 静态工厂（BlueprintPure），通过 `Strategy->GetOuter()` 反查所属化合组件。供声明节点 `ExpandNode` 生成两步调用链（`GetFromStrategy(self)` → `GetDeclaredComponent(Scope, Class)`），使策略类不持有对组件的反向引用。
 
-**C++ 宏访问器（`SINGULARIS_DECLARE_DEPENDENCY`）：** 在类体内展开为返回 `UClassType*` 的 `inline` 访问器 `Get[Name]() const`，内部经 `GetFromStrategy(this)` 反查组件后调用 `GetDeclaredComponent(Scope, UClassType::StaticClass())`，再 `Cast<UClassType>` 类型转换。声明与获取绑定在同一处，编译期类型校验，不可绕过。
+**C++ 宏（`SINGULARIS_DECLARE_DEPENDENCY`）：** 在类体内展开为三部分：(1) 依赖代理成员 `TSingularisCombineDependency<Scope, UClassType> Name{this}`，提供 `Name->` / `*Name` / 隐式裸指针转换（`if (Name)`、`IsValid(Name)`）；(2) 兼容访问器 `Get[Name]() const`，等价于 `Name.Get()`；(3) 静态注册器。代理与访问器均在每次访问时经 `GetFromStrategy(this)` 反查组件后调用 `GetDeclaredComponent(Scope, UClassType::StaticClass())`，再 `Cast<UClassType>` 类型转换（惰性求值，代理不缓存解析结果）。声明与获取绑定在同一处，编译期类型校验，不可绕过。
 
 **蓝图体验：** 4-5 节点样板（Get Outer → Cast → Get Owner → Get Component by Class → Is Valid）拆分为单节点——`DeclareDependency`（作用域与组件类即节点输入引脚，未连接时直接在节点上选择，编译期注入注册表，输出引脚直接输出组件引用）。输出类型由节点上配置的组件类实时推导，声明与使用同一节点，无需跨节点绑定，不存在未声明或声明/使用不一致的路径。
 
@@ -156,6 +156,6 @@
 - **Defensive Programming (防御性编程)：** 在 `Reaction` 阶段对物理执行器进行判空，应对物理实体与抽象标签之间由于时序可能产生的短暂不一致。
 - **State Invalidation (状态失效)：** 当系统的部分组件被动态销毁时，宣告旧黑板作废，强制系统重新计算化合管线，是应对动态环境的核心机制。
 - **Decision vs. Execution (决策与执行分离)：** 架构原则。将“是否应该做（看 Tag）”和“具体怎么做（操纵 Actor）”严格区分为 `CanReaction` 与 `Reaction`。
-- **Declarative Dependency Injection (声明式依赖注入)：** 中层适配机制。遵循「声明即逻辑、实例即状态」原则，将声明升级为类级类型安全机制：原生类用宏 `SINGULARIS_DECLARE_DEPENDENCY(Scope, UClass, Name)` 在头文件生成「类型安全访问器 + 静态注册器」，静态注册器在模块加载期向全局注册表登记；蓝图类用声明节点 `DeclareDependency`（声明与获取一体，输出引脚类型由组件类推导）在编译期 hook 调用 `ReplaceDeclaredClasses` 整体替换入全局注册表。`FSingularisCombineDependencyRegistry` 进程级单例是唯一真相源，策略类不持有任何声明数据与依赖查询入口，声明与查询全部收口于化合组件（依赖倒置，单向依赖）。`AreDependenciesSatisfied` 前置预检保证 `CanReaction` 执行时声明依赖必定存在，消除查询样板。声明集合 == 门控集合 == 可查询集合，三者同源不可分离。
+- **Declarative Dependency Injection (声明式依赖注入)：** 中层适配机制。遵循「声明即逻辑、实例即状态」原则，将声明升级为类级类型安全机制：原生类用宏 `SINGULARIS_DECLARE_DEPENDENCY(Scope, UClass, Name)` 在头文件生成「依赖代理成员（`Name->` 指针语义）+ 兼容访问器 + 静态注册器」，静态注册器在模块加载期向全局注册表登记；蓝图类用声明节点 `DeclareDependency`（声明与获取一体，输出引脚类型由组件类推导）在编译期 hook 调用 `ReplaceDeclaredClasses` 整体替换入全局注册表。`FSingularisCombineDependencyRegistry` 进程级单例是唯一真相源，策略类不持有任何声明数据与依赖查询入口，声明与查询全部收口于化合组件（依赖倒置，单向依赖）。`AreDependenciesSatisfied` 前置预检保证 `CanReaction` 执行时声明依赖必定存在，消除查询样板。声明集合 == 门控集合 == 可查询集合，三者同源不可分离。
 - **Transient Payload (瞬态负荷)：** 中层适配机制。`FSingularisCombineTransientPayload` 承载事件驱动评估的瞬态载荷（EventTag + EventData），与 Context（稳定身份）分离，仅在本次评估有效。
 - **Event-Driven Evaluation (事件驱动评估)：** 中层适配机制。`TriggerEvaluate(Payload)` 立即触发评估并携带事件载荷，突破周期轮询的被动模型，支持中层主动事件响应。
