@@ -23,13 +23,12 @@ class TSingularisCombineDependency
 {
 	static_assert(
 		TIsDerivedFrom<UClassType, UActorComponent>::IsDerived,
-		"SINGULARIS_DECLARE_DEPENDENCY 的组件类型必须是 UActorComponent 的派生类");
+		"SINGULARIS_DECLARE_DEPENDENCY 的组件类型必须是 UActorComponent 的派生类"
+	);
 
 public:
 	explicit TSingularisCombineDependency(const USingularisCombine* InStrategy)
-		: Strategy(InStrategy)
-	{
-	}
+		: Strategy(InStrategy) {}
 
 	/** 指针语义：Pocket->GetSelectedIndex() */
 	UClassType* operator->() const { return Get(); }
@@ -45,8 +44,10 @@ public:
 	{
 		USingularisCombineComponent* const OwnerComponent = USingularisCombineComponent::GetFromStrategy(Strategy);
 		return Cast<UClassType>(
-			OwnerComponent ? OwnerComponent->GetDeclaredComponent(Scope, UClassType::StaticClass())
-						   : nullptr);
+			OwnerComponent
+				? OwnerComponent->GetDeclaredComponent(Scope, UClassType::StaticClass())
+				: nullptr
+		);
 	}
 
 private:
