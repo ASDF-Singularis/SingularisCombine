@@ -12,11 +12,10 @@ class UClass;
 class UActorComponent;
 
 /**
- * 引力奇点化合依赖注册表
- * 进程级函数局部静态单例，作为策略声明依赖的唯一真相源（SSOT）。
- * 写入路径两条：模块静态初始化期由声明宏的静态注册器经 RegisterDependency 追加；
- * 蓝图编译完成后由编辑器 hook 经 ReplaceDeclaredClasses 整体替换。
- * 评估期由 USingularisCombineComponent::GetDeclaredComponentClasses 只读查询。
+ * 引力奇点化合依赖注册表（C++ 静态声明源）
+ * 进程级函数局部静态单例。仅承载 C++ 侧经 SINGULARIS_DECLARE_DEPENDENCY 静态注册器登记的声明；
+ * 蓝图侧声明随策略类 CDO（USingularisCombine::DeclaredDependencies）烘焙，不经过本表。
+ * 评估期由 USingularisCombineComponent::GetDeclaredComponentClasses 将本表与 CDO 声明合并只读查询。
  * UClass 指针在引擎生命周期内稳定，作为 Map 键安全。
  */
 class FSingularisCombineDependencyRegistry
@@ -48,25 +47,7 @@ public:
 	}
 
 	/**
-	 * 整体替换指定策略类的全部声明依赖（蓝图编译 hook 路径使用）
-	 * 保证幂等：每次编译全量重建后赋值，避免反复编译累积重复声明。
-	 * @param StrategyClass   策略类
-	 * @param InDeclared      本次编译产物（按作用域分组）
-	 */
-	void ReplaceDeclaredClasses(
-		UClass* StrategyClass,
-		TMap<ESingularisCombineDependencyScope, FSingularisCombineDependencyList> InDeclared
-	)
-	{
-		if (!StrategyClass)
-			return;
-
-		FScopeLock Lock(&CriticalSection);
-		Registry.FindOrAdd(StrategyClass) = MoveTemp(InDeclared);
-	}
-
-	/**
-	 * 查询指定策略类的声明依赖（只读，沿继承链聚合由调用方处理）
+	 * 查询指定策略类登记的直接声明（只读，沿继承链聚合由调用方处理）
 	 * @param StrategyClass  策略类
 	 * @return 该类直接登记的声明依赖映射，未登记返回 nullptr
 	 */
@@ -79,13 +60,6 @@ public:
 
 		FScopeLock Lock(&CriticalSection);
 		return Registry.Find(StrategyClass);
-	}
-
-	/** 清空全部登记（模块卸载时使用） */
-	void Clear()
-	{
-		FScopeLock Lock(&CriticalSection);
-		Registry.Empty();
 	}
 
 private:

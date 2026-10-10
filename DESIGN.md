@@ -44,7 +44,7 @@
 | **状态感知** | 遍历 Actor 及挂载组件，通过 `IGameplayTagAssetInterface` 提取并汇总 `BlackboardTags`。 |
 | **事件广播** | 状态更新时触发 `OnCombineBlackboardUpdatedEvent`，允许外部系统（如 UI）被动监听环境变化。 |
 | **管线求值** | 提供 `EvaluatePipeline()` 核心方法，按顺序逐一询问并执行 `CombinePipeline` 中的策略列表。所有策略独立判定，互不中断。 |
-| **依赖预解析** | 评估前调用组件层的 `ResolveDependencies(Context)`，通过组件方法 `GetDeclaredComponentClasses(StrategyClass)` 收集管线所有策略的声明并集（统一查询全局依赖注册表，原生宏路径与蓝图编译 hook 路径同源写入），将每个作用域映射到 Context 中对应 Actor 并查找缓存到 `CachedDependencies`；调用时机覆盖 `EvaluatePipeline` 与 `TickComponent`，保证 `SustainReaction` 中查询亦可用。 |
+| **依赖预解析** | 评估前调用组件层的 `ResolveDependencies(Context)`，通过组件方法 `GetDeclaredComponentClasses(StrategyClass)` 收集管线所有策略的声明并集（合并 C++ 静态注册表与蓝图 CDO 双源声明），将每个作用域映射到 Context 中对应 Actor 并查找缓存到 `CachedDependencies`；调用时机覆盖 `EvaluatePipeline` 与 `TickComponent`，保证 `SustainReaction` 中查询亦可用。 |
 | **依赖前置预检** | `AreDependenciesSatisfied(Strategy, Context)` 在 `CanReaction` 之前强约束检查：空声明=无条件满足；任意声明依赖缺失=不进入 `CanReaction`，直接走回滚路径。门控集合与 `ResolveDependencies` 的查询集合共享同一声明源（`GetDeclaredComponentClasses(StrategyClass)`），保证 `CanReaction` / `Reaction` 执行时声明依赖必定存在。 |
 | **依赖查询入口** | 暴露 `GetDeclaredComponent(Scope, Class)` BlueprintPure（`DeterminesOutputType` 自动推导输出类型），供蓝图策略与声明节点展开后调用；C++ 宏访问器经静态工厂 `GetFromStrategy(this)` 反查所属化合组件后委托调用。 |
 | **事件驱动评估** | 提供 `TriggerEvaluate(Payload)` API，立即触发一次评估并将事件载荷贯穿整条管线，不等周期轮询。 |
@@ -68,15 +68,15 @@
 
 **单一真相源原则 (Single Source of Truth)：** 声明式组件遵循「声明即逻辑、实例即状态」的判定——声明属于静态逻辑（类级），实例只承载动态状态。因此声明数据归属类级，不再放入每实例编辑器配置。化合核心是查询，玩家所需查询的组件与门控前置的集合一致：声明集合 == 门控集合 == 可查询集合，三者不可分离。
 
-**分层设计：** 采用「声明源 → 全局注册表 → 组件查询」三段式。原生类与蓝图类声明源不同，但统一写入同一份 `FSingularisCombineDependencyRegistry` 进程级单例（唯一真相源）。
+**分层设计：** 采用「声明源 → 类级存储 → 组件查询」三段式。原生类声明经进程级静态注册表（`FSingularisCombineDependencyRegistry`）承载，蓝图类声明随策略类 CDO 烘焙；两者由化合组件的 `GetDeclaredComponentClasses` 合并为单一读取入口。
 
 - **原生类（静态注册表）：** 声明宏在头文件展开为「依赖代理成员 + 兼容访问器 + 静态注册器实例」，静态注册器在模块加载期向全局注册表登记 `(StaticClass, Scope, ComponentClass)`。模块加载早于任何 Gameplay 代码，注册表在评估期必然完整，规避「CDO 构造时机 vs 静态初始化时机」的排序风险。
-- **蓝图类（编译期 hook）：** 声明节点 `DeclareDependency`（配置作用域 + 组件类，输出引脚类型由组件类推导）即声明即使用；编译期 hook（`FCoreUObjectDelegates::OnObjectPostCDOCompiled` 扫图）提取节点，按 `(Scope, Class)` 去重后调用 `FSingularisCombineDependencyRegistry::ReplaceDeclaredClasses` 整体替换该策略类的声明集合。整体替换语义保证幂等：反复编译不会累积重复声明。
-- **策略类零负担：** `USingularisCombine` 不再持有 `DeclaredComponents` 字段、`friend` 授权或依赖查询入口，只保留纯粹的化合 SPI。声明的登记、查询、缓存全部收口于化合组件，策略类不知晓组件的存在（依赖倒置，单向依赖）。
+- **蓝图类（编译期回填 CDO）：** 声明节点 `DeclareDependency`（配置作用域 + 组件类，输出引脚类型由组件类推导）即声明即使用；编译期 hook（`FCoreUObjectDelegates::OnObjectPostCDOCompiled` 扫图）提取节点，按 `(Scope, Class)` 去重后写入策略类 CDO 的 `DeclaredDependencies`（可烘焙 UPROPERTY）。该字段随蓝图资产序列化并参与烘焙，打包版本运行时无需编辑器即可读取——这是蓝图侧等价于「宏静态注册器随二进制编译」的落盘方式。整体替换该字段保证幂等：反复编译不会累积重复声明。
+- **策略类零负担：** `USingularisCombine` 不暴露任何依赖查询入口或 `friend` 授权，仅保留纯粹的化合 SPI 与一份编译期回填、随类烘焙的声明数据（`DeclaredDependencies`，非设计师配置）。声明的登记、合并、缓存全部收口于化合组件，策略类不知晓组件的存在（依赖倒置，单向依赖）。
 
 **组件层（`USingularisCombineComponent`）**：
 
-- **`GetDeclaredComponentClasses(StrategyClass)`：** 纯函数查询入口。沿继承链聚合所有祖先的注册表声明（含自身，子策略继承父策略的全部声明），返回按作用域分组的声明类型列表。供 `ResolveDependencies` 聚合并集、`AreDependenciesSatisfied` 门控校验共用。
+- **`GetDeclaredComponentClasses(StrategyClass)`：** 纯函数查询入口，也是声明的唯一读取入口。沿继承链聚合所有祖先的声明（含自身，子策略继承父策略的全部声明），逐类合并两个来源——C++ 静态注册表（`FSingularisCombineDependencyRegistry`）与蓝图 CDO 声明（`USingularisCombine::DeclaredDependencies`）——返回按作用域分组的类型列表。供 `ResolveDependencies` 聚合并集、`AreDependenciesSatisfied` 门控校验共用。
 - **`CachedDependencies`：** 运行时缓存，类型为 `TMap<ESingularisCombineDependencyScope, TMap<TSubclassOf<UActorComponent>, TWeakObjectPtr<UActorComponent>>>`，按作用域分组。纯 C++ 成员（非 UPROPERTY）。
 - **`ResolveDependencies(Context)`：** 评估前刷新缓存。通过 `GetDeclaredComponentClasses(Strategy->GetClass())` 收集管线所有策略声明的依赖并集，将每个作用域映射到 Context 中的 Actor（`GetContextActor`），按声明类型查找并写入对应作用域槽位。
 - **`AreDependenciesSatisfied(Strategy, Context)`：** `CanReaction` 的前置强约束。空声明返回 true（无条件满足）；任一声明依赖缺失返回 false（不进入 `CanReaction`，直接回滚）。门控集合与可查询集合共享 `GetDeclaredComponentClasses(StrategyClass)` 同源，保证 `CanReaction` / `Reaction` 执行时声明依赖必定存在。
@@ -85,9 +85,9 @@
 
 **C++ 宏（`SINGULARIS_DECLARE_DEPENDENCY`）：** 在类体内展开为三部分：(1) 依赖代理成员 `TSingularisCombineDependency<Scope, UClassType> Name{this}`，提供 `Name->` / `*Name` / 隐式裸指针转换（`if (Name)`、`IsValid(Name)`）；(2) 兼容访问器 `Get[Name]() const`，等价于 `Name.Get()`；(3) 静态注册器。代理与访问器均在每次访问时经 `GetFromStrategy(this)` 反查组件后调用 `GetDeclaredComponent(Scope, UClassType::StaticClass())`，再 `Cast<UClassType>` 类型转换（惰性求值，代理不缓存解析结果）。声明与获取绑定在同一处，编译期类型校验，不可绕过。
 
-**蓝图体验：** 4-5 节点样板（Get Outer → Cast → Get Owner → Get Component by Class → Is Valid）拆分为单节点——`DeclareDependency`（作用域与组件类即节点输入引脚，未连接时直接在节点上选择，编译期注入注册表，输出引脚直接输出组件引用）。输出类型由节点上配置的组件类实时推导，声明与使用同一节点，无需跨节点绑定，不存在未声明或声明/使用不一致的路径。
+**蓝图体验：** 4-5 节点样板（Get Outer → Cast → Get Owner → Get Component by Class → Is Valid）拆分为单节点——`DeclareDependency`（作用域与组件类即节点输入引脚，未连接时直接在节点上选择，编译期回填 CDO 声明，输出引脚直接输出组件引用）。输出类型由节点上配置的组件类实时推导，声明与使用同一节点，无需跨节点绑定，不存在未声明或声明/使用不一致的路径。
 
-**重复声明（推荐用法）：** 同一蓝图内可放置多个配置相同的 `DeclareDependency` 节点，每个使用位置就近放置、各自输出组件引用，避免跨图长线连接，蓝图结构更清晰。重复声明不会造成冗余：hook 扫描按 `(Scope, Class)` 经 `AddUnique` 去重后整体替换入注册表，编译产物只保留一份；各节点独立展开为两步调用链，无共享状态；输出未连接的节点即使被编译器修剪，也不影响 hook 对原始图的扫描，声明仍照常入注册表。注意：复制节点后**修改**配置（如更换 `ComponentClass`）即视为新声明，会新增门控依赖，需确认改动是有意的。
+**重复声明（推荐用法）：** 同一蓝图内可放置多个配置相同的 `DeclareDependency` 节点，每个使用位置就近放置、各自输出组件引用，避免跨图长线连接，蓝图结构更清晰。重复声明不会造成冗余：hook 扫描按 `(Scope, Class)` 经 `AddUnique` 去重后回填策略类 CDO 的 `DeclaredDependencies`，编译产物只保留一份；各节点独立展开为两步调用链，无共享状态；输出未连接的节点即使被编译器修剪，也不影响 hook 对原始图的扫描，声明仍照常回填 CDO。注意：复制节点后**修改**配置（如更换 `ComponentClass`）即视为新声明，会新增门控依赖，需确认改动是有意的。
 
 ### 3. `FSingularisCombineTransientPayload` (瞬态负荷)
 
@@ -121,7 +121,7 @@
 2. **标签变更检测与广播：** 若 GameplayTags 或原生 FName 标签集合实际变更，触发 `OnCombineBlackboardUpdatedEvent`（所有端）。
 3. **服务端权威闸门：** 非服务端提前 return，后续步骤仅服务端执行。
 4. **Context 与 Payload 构建：** 构建 `Context`（Instigator / Avatar / Target / CombineComponent）与 `Payload` 局部快照（读取 `PendingPayload`，周期轮询时为空）。
-5. **依赖预解析 (Dependency Resolution)：** 调用组件层 `ResolveDependencies(Context)`，通过组件方法 `GetDeclaredComponentClasses(Strategy->GetClass())` 按作用域聚合管线所有策略的声明并集（统一查询全局依赖注册表），对三个 Actor 分别查找并写入 `CachedDependencies`。
+5. **依赖预解析 (Dependency Resolution)：** 调用组件层 `ResolveDependencies(Context)`，通过组件方法 `GetDeclaredComponentClasses(Strategy->GetClass())` 按作用域聚合管线所有策略的声明并集（合并静态注册表与 CDO 双源声明），对三个 Actor 分别查找并写入 `CachedDependencies`。
 6. **状态推演 (State Transition)：** 按序遍历策略：
    - **依赖前置预检**：逐策略调用 `AreDependenciesSatisfied(Strategy, Context)`。空声明=无条件满足；任一声明依赖缺失=不进入 `CanReaction`，若策略原处于激活态则直接走 `ReactionRevert`。门控集合与查询集合同源，不可分离。
    - 若 `CanReaction == true` 且当前 `bIsActive == false`：调用 `Reaction()`，标记激活。
@@ -156,6 +156,6 @@
 - **Defensive Programming (防御性编程)：** 在 `Reaction` 阶段对物理执行器进行判空，应对物理实体与抽象标签之间由于时序可能产生的短暂不一致。
 - **State Invalidation (状态失效)：** 当系统的部分组件被动态销毁时，宣告旧黑板作废，强制系统重新计算化合管线，是应对动态环境的核心机制。
 - **Decision vs. Execution (决策与执行分离)：** 架构原则。将“是否应该做（看 Tag）”和“具体怎么做（操纵 Actor）”严格区分为 `CanReaction` 与 `Reaction`。
-- **Declarative Dependency Injection (声明式依赖注入)：** 中层适配机制。遵循「声明即逻辑、实例即状态」原则，将声明升级为类级类型安全机制：原生类用宏 `SINGULARIS_DECLARE_DEPENDENCY(Scope, UClass, Name)` 在头文件生成「依赖代理成员（`Name->` 指针语义）+ 兼容访问器 + 静态注册器」，静态注册器在模块加载期向全局注册表登记；蓝图类用声明节点 `DeclareDependency`（声明与获取一体，输出引脚类型由组件类推导）在编译期 hook 调用 `ReplaceDeclaredClasses` 整体替换入全局注册表。`FSingularisCombineDependencyRegistry` 进程级单例是唯一真相源，策略类不持有任何声明数据与依赖查询入口，声明与查询全部收口于化合组件（依赖倒置，单向依赖）。`AreDependenciesSatisfied` 前置预检保证 `CanReaction` 执行时声明依赖必定存在，消除查询样板。声明集合 == 门控集合 == 可查询集合，三者同源不可分离。
+- **Declarative Dependency Injection (声明式依赖注入)：** 中层适配机制。遵循「声明即逻辑、实例即状态」原则，将声明升级为类级类型安全机制：原生类用宏 `SINGULARIS_DECLARE_DEPENDENCY(Scope, UClass, Name)` 在头文件生成「依赖代理成员（`Name->` 指针语义）+ 兼容访问器 + 静态注册器」，静态注册器在模块加载期向进程级静态注册表（`FSingularisCombineDependencyRegistry`）登记；蓝图类用声明节点 `DeclareDependency`（声明与获取一体，输出引脚类型由组件类推导）在编译期 hook 回填策略类 CDO 的 `DeclaredDependencies`（可烘焙 UPROPERTY，随类序列化）。化合组件的 `GetDeclaredComponentClasses` 是唯一读取入口，沿继承链合并「静态注册表 + CDO 声明」双源；`AreDependenciesSatisfied` 前置预检保证 `CanReaction` 执行时声明依赖必定存在。策略类不暴露查询入口，声明与查询收口于化合组件（依赖倒置，单向依赖）。声明集合 == 门控集合 == 可查询集合，三者同源不可分离。
 - **Transient Payload (瞬态负荷)：** 中层适配机制。`FSingularisCombineTransientPayload` 承载事件驱动评估的瞬态载荷（EventTag + EventData），与 Context（稳定身份）分离，仅在本次评估有效。
 - **Event-Driven Evaluation (事件驱动评估)：** 中层适配机制。`TriggerEvaluate(Payload)` 立即触发评估并携带事件载荷，突破周期轮询的被动模型，支持中层主动事件响应。

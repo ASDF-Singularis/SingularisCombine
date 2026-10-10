@@ -11,8 +11,8 @@ class FDelegateHandle;
 /**
  * 蓝图编译期声明回填 hook
  * 订阅 FCoreUObjectDelegates::OnObjectPostCDOCompiled，在蓝图产物 CDO 编译完成后
- * 扫描全部图内的声明节点，按 (Scope, Class) 去重写入全局依赖注册表（唯一真相源）。
- * 注册表通过 ReplaceDeclaredClasses 整体替换语义保证幂等，无需对策略类授权 friend。
+ * 扫描全部图内的声明节点，按 (Scope, Class) 去重写入策略类 CDO 的 DeclaredDependencies。
+ * 该字段为可烘焙 UPROPERTY：随蓝图资产序列化并参与烘焙，打包版本运行时无需编辑器即可读取。
  */
 class FSingularisCombineBlueprintCompileHook
 {

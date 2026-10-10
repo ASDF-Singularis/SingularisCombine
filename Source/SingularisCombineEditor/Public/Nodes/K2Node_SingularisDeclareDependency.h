@@ -12,7 +12,7 @@ class UActorComponent;
  * 声明依赖 K2Node（声明与获取一体）
  * 声明即使用：作用域与组件类为节点输入引脚（未连接时直接在节点上选择），输出引脚直接输出组件引用，
  * 输出类型由组件类配置实时推导，无跨节点绑定环节。
- * 编译期 hook 扫描本节点按 (Scope, Class) 去重写入全局依赖注册表（唯一真相源）；
+ * 编译期 hook 扫描本节点按 (Scope, Class) 去重回填策略类 CDO 的 DeclaredDependencies（随类烘焙）；
  * ExpandNode 展开为两步调用链：USingularisCombineComponent::GetFromStrategy(self) →
  * USingularisCombineComponent::GetDeclaredComponent(Scope, Class)。
  */

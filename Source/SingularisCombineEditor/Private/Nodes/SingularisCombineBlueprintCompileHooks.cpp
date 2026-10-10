@@ -9,8 +9,35 @@
 #include "Nodes/K2Node_SingularisDeclareDependency.h"
 #include "Objects/SingularisCombineBase.h"
 #include "Types/SingularisCombineDependencyList.h"
-#include "Types/SingularisCombineDependencyRegistry.h"
 #include "Types/SingularisCombineDependencyScope.h"
+
+namespace
+{
+	/** 声明集合是否等价（作用域键相同且每作用域类型集合一致，忽略顺序） */
+	bool AreDeclarationsEquivalent(
+		const TMap<ESingularisCombineDependencyScope, FSingularisCombineDependencyList>& A,
+		const TMap<ESingularisCombineDependencyScope, FSingularisCombineDependencyList>& B
+	)
+	{
+		if (A.Num() != B.Num())
+			return false;
+
+		for (const auto& Pair : A)
+		{
+			const FSingularisCombineDependencyList* const Found = B.Find(Pair.Key);
+			if (!Found || Found->Classes.Num() != Pair.Value.Classes.Num())
+				return false;
+
+			for (const TSubclassOf<UActorComponent>& DepClass : Pair.Value.Classes)
+			{
+				if (!Found->Classes.Contains(DepClass))
+					return false;
+			}
+		}
+
+		return true;
+	}
+}
 
 void FSingularisCombineBlueprintCompileHook::Register(FDelegateHandle& OutHandle)
 {
@@ -29,10 +56,10 @@ void FSingularisCombineBlueprintCompileHook::Unregister(FDelegateHandle& Handle)
 }
 
 /**
- * CDO 编译完成回调：扫描蓝图全部图的声明节点，将声明写入全局依赖注册表
+ * CDO 编译完成回调：扫描蓝图全部图的声明节点，将声明回填至策略类 CDO 的 DeclaredDependencies
  * 重复声明（相同 (Scope, Class)）经 AddUnique 去重，编译产物只保留一份；
- * 仅收录未连接的静态声明，连接的动态值编译期不可知，不入注册表。
- * 注册表为唯一真相源，整体替换语义保证幂等：每次编译全量重建后赋值，避免反复编译累积重复声明。
+ * 仅收录未连接的静态声明，连接的动态值编译期不可知，不入 CDO。
+ * 值未变化时跳过，变化时回填并标记蓝图待保存（幂等，避免反复编译累积重复声明）。
  * @param CDO      刚编译完成的类默认对象
  * @param Context  编译上下文（含骨架编译标志）
  */
@@ -83,7 +110,7 @@ void FSingularisCombineBlueprintCompileHook::HandleCDOCompiled(
 
 			++NodeCount;
 
-			// 仅收录未连接的静态声明（连接引脚的动态值编译期不可知，不入注册表）
+			// 仅收录未连接的静态声明（连接引脚的动态值编译期不可知，不入 CDO）
 			const UEdGraphPin* ScopePin = Node->FindPin(UK2Node_SingularisDeclareDependency::GetScopePinName());
 			const UEdGraphPin* ClassPin = Node->FindPin(
 				UK2Node_SingularisDeclareDependency::GetComponentClassPinName()
@@ -141,19 +168,20 @@ void FSingularisCombineBlueprintCompileHook::HandleCDOCompiled(
 		Backfilled.Num()
 	);
 
-	// 4) 整体替换该策略类在注册表中的声明集合（唯一真相源，幂等）
-	const auto TargetClass = Blueprint->GeneratedClass.Get();
+	// 4) 回填策略类 CDO：该 UPROPERTY 随蓝图资产序列化并参与烘焙，打包版本运行时无需编辑器即可读取。
+	//    值未变化时跳过（避免编辑器加载误标脏）；变化时回填并标记蓝图待保存，使升级后的旧资产重新落盘。
+	USingularisCombine* const StrategyCDO = Cast<USingularisCombine>(CDO);
+	if (!StrategyCDO || AreDeclarationsEquivalent(StrategyCDO->DeclaredDependencies, Backfilled))
+		return;
+
+	StrategyCDO->DeclaredDependencies = MoveTemp(Backfilled);
+	StrategyCDO->MarkPackageDirty();
+
 	UE_LOG(
 		LogSingularisCombine,
 		Display,
-		TEXT("HandleCDOCompiled：写入注册表（写入指针=%p, GetPathName=%s, 作用域=%d）"),
-		TargetClass,
-		*TargetClass->GetPathName(),
-		Backfilled.Num()
-	);
-
-	FSingularisCombineDependencyRegistry::Get().ReplaceDeclaredClasses(
-		TargetClass,
-		MoveTemp(Backfilled)
+		TEXT("HandleCDOCompiled：回填 CDO 声明（CDO=%s, 作用域=%d）"),
+		*StrategyCDO->GetPathName(),
+		StrategyCDO->DeclaredDependencies.Num()
 	);
 }

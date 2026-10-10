@@ -5,6 +5,8 @@
 #include <Templates/Casts.h>
 #include <UObject/Object.h>
 
+#include "Types/SingularisCombineDependencyList.h"
+#include "Types/SingularisCombineDependencyScope.h"
 #include "Types/SingularisCombineTransientPayload.h"
 #include "Types/SingularisCombineType.h"
 #include "SingularisCombineBase.generated.h"
@@ -20,7 +22,8 @@ class USingularisCombineComponent;
  *
  * 作为 UObject 子对象挂载于 USingularisCombineComponent，
  * 通过 AddReplicatedSubObject 注册至组件级复制列表，bIsActive 属性的变更将同步至所有客户端。
- * 声明式依赖的登记、查询、缓存由 USingularisCombineComponent 全权负责，策略类不知晓其存在（依赖倒置）。
+ * 声明式依赖的登记、查询、缓存由 USingularisCombineComponent 全权负责；策略类仅承载随类烘焙的
+ * 蓝图声明数据（DeclaredDependencies，编译期回填），不暴露任何依赖查询入口（依赖倒置）。
  */
 UCLASS(Abstract, Blueprintable, EditInlineNew, CollapseCategories)
 class SINGULARISCOMBINE_API USingularisCombine : public UObject
@@ -56,6 +59,17 @@ public:
 #pragma endregion
 
 #pragma region State
+
+	/**
+	 * 类级声明式依赖（编译期回填，随类烘焙）。
+	 *
+	 * 蓝图策略的声明由编辑器编译 hook 在 CDO 编译完成后写入，随蓝图资产序列化并参与烘焙，
+	 * 保证打包版本无需编辑器即可读取；C++ 策略的声明经宏静态注册表提供。
+	 * 两者由 USingularisCombineComponent::GetDeclaredComponentClasses 合并读取。
+	 * 仅内部承载，非设计师配置项，不暴露给蓝图。
+	 */
+	UPROPERTY()
+	TMap<ESingularisCombineDependencyScope, FSingularisCombineDependencyList> DeclaredDependencies{};
 
 	/** 查询当前化合策略是否处于激活状态 */
 	UFUNCTION(

@@ -11,6 +11,25 @@
 #include "Types/SingularisCombineTransientPayload.h"
 #include "Types/SingularisCombineType.h"
 
+namespace
+{
+	/** 将一组声明依赖合并进聚合结果，按 (Scope, Class) 去重 */
+	void MergeDependencyLists(
+		TMap<ESingularisCombineDependencyScope, FSingularisCombineDependencyList>& InOut,
+		const TMap<ESingularisCombineDependencyScope, FSingularisCombineDependencyList>& In
+	)
+	{
+		for (const auto& Pair : In)
+		{
+			for (const TSubclassOf<UActorComponent>& DepClass : Pair.Value.Classes)
+			{
+				if (DepClass)
+					InOut.FindOrAdd(Pair.Key).Classes.AddUnique(DepClass);
+			}
+		}
+	}
+}
+
 USingularisCombineComponent::USingularisCombineComponent()
 {
 	SetIsReplicatedByDefault(true);
@@ -393,19 +412,18 @@ USingularisCombineComponent::GetDeclaredComponentClasses(const UClass* StrategyC
 	if (!StrategyClass)
 		return Result;
 
-	// 1) 沿继承链聚合所有祖先的注册表声明（含自身）：子策略继承父策略的全部声明
+	// 沿继承链聚合所有祖先声明的并集（含自身）：子策略继承父策略的全部声明。
+	// 声明双源合并：C++ 静态注册表（随二进制编译）与蓝图 CDO 声明（随类烘焙）。
 	for (const UClass* Class = StrategyClass; Class; Class = Class->GetSuperClass())
 	{
-		const TMap<ESingularisCombineDependencyScope, FSingularisCombineDependencyList>* const Found =
-			FSingularisCombineDependencyRegistry::Get().FindDeclaredClasses(Class);
-		if (!Found)
-			continue;
+		// 1) C++ 通道：模块加载期由声明宏静态注册器写入的进程级静态表
+		if (const TMap<ESingularisCombineDependencyScope, FSingularisCombineDependencyList>* const Statics =
+			FSingularisCombineDependencyRegistry::Get().FindDeclaredClasses(Class))
+			MergeDependencyLists(Result, *Statics);
 
-		for (const auto& Pair : *Found)
-		{
-			for (const TSubclassOf<UActorComponent>& DepClass : Pair.Value.Classes)
-				Result.FindOrAdd(Pair.Key).Classes.AddUnique(DepClass);
-		}
+		// 2) 蓝图通道：编辑器编译 hook 回填至 CDO 并随类烘焙的声明（打包版本依然可读）
+		if (const USingularisCombine* const StrategyCDO = Cast<USingularisCombine>(Class->GetDefaultObject()))
+			MergeDependencyLists(Result, StrategyCDO->DeclaredDependencies);
 	}
 
 	return Result;
