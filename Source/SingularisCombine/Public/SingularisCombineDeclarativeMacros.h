@@ -37,7 +37,7 @@ public:
 	UClassType& operator*() const { return *Get(); }
 
 	/** 裸指针语义：if (Pocket) / IsValid(Pocket) / 传参，与旧版 Get[Name]() 返回的裸指针行为一致 */
-	explicit operator UClassType*() const { return Get(); }
+	operator UClassType*() const { return Get(); }
 
 	/** 解析依赖；宿主化合组件缺失或依赖未缓存时返回 nullptr */
 	UClassType* Get() const
@@ -74,17 +74,17 @@ private:
  * @param Name         访问器名（如 Move → 生成成员 Move 与访问器 GetMove）
  */
 #define SINGULARIS_DECLARE_DEPENDENCY(Scope, UClassType, Name) \
-    TSingularisCombineDependency<ESingularisCombineDependencyScope::Scope, UClassType> Name{this}; \
-    UClassType* Get##Name() const \
-    { \
-        return Name.Get(); \
-    } \
-    struct F##Name##Registrar \
-    { \
-        F##Name##Registrar() \
-        { \
-            FSingularisCombineDependencyRegistry::Get().RegisterDependency( \
-                StaticClass(), ESingularisCombineDependencyScope::Scope, UClassType::StaticClass()); \
-        } \
-    }; \
-    static inline F##Name##Registrar Name##Registrar{};
+	TSingularisCombineDependency<ESingularisCombineDependencyScope::Scope, UClassType> Name{this}; \
+	UClassType* Get##Name() const \
+	{ \
+		return Name.Get(); \
+	} \
+	struct F##Name##Registrar \
+	{ \
+		F##Name##Registrar() \
+		{ \
+			FSingularisCombineDependencyRegistry::Get().RegisterDependency( \
+				StaticClass(), ESingularisCombineDependencyScope::Scope, UClassType::StaticClass()); \
+		} \
+	}; \
+	static inline F##Name##Registrar Name##Registrar{};

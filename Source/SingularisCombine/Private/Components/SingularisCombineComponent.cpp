@@ -9,6 +9,7 @@
 #include "Types/SingularisCombineDependencyRegistry.h"
 #include "Types/SingularisCombineDependencyScope.h"
 #include "Types/SingularisCombineTransientPayload.h"
+#include "Types/SingularisCombineType.h"
 
 USingularisCombineComponent::USingularisCombineComponent()
 {
@@ -25,14 +26,14 @@ void USingularisCombineComponent::BeginPlay()
 {
 	Super::BeginPlay();
 
-	const UWorld* World = GetWorld();
+	const UWorld* const World = GetWorld();
 	if (!World) return;
 
 	// 1) 服务器端：将化合管线中的 Instanced 子对象注册至网络复制列表
 	if (GetOwner() && GetOwner()->HasAuthority())
 		RegisterCombineSubObjects();
 
-	// 2) 启动周期性评估定时器：兜底检测组件移除与标签变更
+	// 2) 启动周期性评估定时器：兜底检测组件增删与标签变更
 	if (AutoEvaluateInterval > 0.0f)
 	{
 		World->GetTimerManager().SetTimer(
@@ -43,10 +44,8 @@ void USingularisCombineComponent::BeginPlay()
 		);
 	}
 
-	// 3) 初始前置声明依赖解析
-	ResolveDependencies();
-
-	// 3) 初始评估：收集标签并（服务端）执行管线
+	// 3) 初始依赖预解析与首次评估
+	ResolveDependencies(MakeContext());
 	EvaluatePipeline();
 }
 
@@ -54,21 +53,10 @@ void USingularisCombineComponent::EndPlay(const EEndPlayReason::Type EndPlayReas
 {
 	UnregisterCombineSubObjects();
 
-	// 1) 清理定时器
 	if (const UWorld* const World = GetWorld())
-	{
 		World->GetTimerManager().ClearTimer(PeriodicEvaluateHandle);
-		World->GetTimerManager().ClearTimer(PendingEvaluateHandle);
-	}
 
 	Super::EndPlay(EndPlayReason);
-}
-
-void USingularisCombineComponent::GetLifetimeReplicatedProps(
-	TArray<FLifetimeProperty>& OutLifetimeProps
-) const
-{
-	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 }
 
 void USingularisCombineComponent::TickComponent(
@@ -80,26 +68,18 @@ void USingularisCombineComponent::TickComponent(
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 
 	AActor* const OwnerActor = GetOwner();
-	if (!OwnerActor)
-		return;
+	if (!OwnerActor) return;
 
-	// 1) 构建化合上下文
-	FSingularisCombineContext Context;
-	Context.Avatar = OwnerActor;
-	Context.Instigator = Cast<AActor>(OwnerActor->GetInstigator());
-	Context.Target = nullptr;
-	Context.CombineComponent = this;
-
-	// 2) 服务端：评估间隔为 0 时每帧执行管线
+	// 1) 服务端：评估间隔为 0 时每帧执行管线
 	if (OwnerActor->HasAuthority() && AutoEvaluateInterval <= 0.0f)
 		EvaluatePipeline();
 
-	// 3) 所有端：遍历激活的策略并调用 SustainReaction（驱动瞬态效果）
+	// 2) 所有端：遍历激活策略并驱动持续反应（瞬态效果）
+	const FSingularisCombineContext Context = MakeContext();
 	for (const FSingularisCombineEntry& Entry : CombinePipeline.Combines)
 	{
 		USingularisCombine* const Combine = Entry.Combine;
-		if (!Combine || !Combine->IsActive())
-			continue;
+		if (!Combine || !Combine->IsActive()) continue;
 
 		Combine->SustainReaction(
 			Context,
@@ -111,50 +91,126 @@ void USingularisCombineComponent::TickComponent(
 	}
 }
 
+void USingularisCombineComponent::SetPipeline(const FSingularisCombinePipeline& InPipeline)
+{
+	// 1) 回滚当前管线中所有已激活策略的状态
+	if (GetOwner())
+	{
+		const FSingularisCombineContext Context = MakeContext();
+		for (const FSingularisCombineEntry& Entry : CombinePipeline.Combines)
+		{
+			USingularisCombine* const Combine = Entry.Combine;
+			if (!Combine || !Combine->IsActive()) continue;
+
+			Combine->ReactionRevert(
+				Context,
+				FSingularisCombineTransientPayload{},
+				BlackboardTags,
+				NativeBlackboardTags
+			);
+			Combine->SetActive(false);
+		}
+	}
+
+	// 2) 替换管线并立即重估
+	CombinePipeline = InPipeline;
+	EvaluatePipeline();
+}
+
+void USingularisCombineComponent::ClearPipeline()
+{
+	SetPipeline(FSingularisCombinePipeline{});
+}
+
+void USingularisCombineComponent::AddCombineEntry(const FSingularisCombineEntry& Entry)
+{
+	CombinePipeline.Combines.Add(Entry);
+	EvaluatePipeline();
+}
+
+void USingularisCombineComponent::EvaluatePipeline()
+{
+	AActor* const OwnerActor = GetOwner();
+	if (!OwnerActor) return;
+
+	// 1) 所有端：刷新全局黑板，仅在标签集合实际变更时广播
+	CollectAllTags();
+	if (BlackboardTags != PreviousBlackboardTags || NativeBlackboardTags != PreviousNativeBlackboardTags)
+	{
+		PreviousBlackboardTags = BlackboardTags;
+		PreviousNativeBlackboardTags = NativeBlackboardTags;
+		OnCombineBlackboardUpdatedEvent.Broadcast(BlackboardTags, NativeBlackboardTags);
+	}
+
+	// 2) 服务端权威闸门：非服务端不再推演状态
+	if (!OwnerActor->HasAuthority()) return;
+
+	// 3) 构建上下文快照与事件载荷快照（TriggerEvaluate 写入，周期轮询时为空）
+	const FSingularisCombineContext Context = MakeContext();
+	const FSingularisCombineTransientPayload Payload = PendingPayload;
+
+	// 4) 逐策略状态推演
+	for (FSingularisCombineEntry& Entry : CombinePipeline.Combines)
+	{
+		USingularisCombine* const Combine = Entry.Combine;
+		if (!Combine) continue;
+
+		const bool bActive = Combine->IsActive();
+
+		// 声明依赖未全部满足 → 不进入 CanReaction，若已激活则回滚
+		if (!AreDependenciesSatisfied(Combine, Context))
+		{
+			if (bActive)
+			{
+				Combine->ReactionRevert(Context, Payload, BlackboardTags, NativeBlackboardTags);
+				Combine->SetActive(false);
+			}
+			continue;
+		}
+
+		// 条件成立且未激活 → 执行正向反应
+		if (Combine->CanReaction(Context, Payload, BlackboardTags, NativeBlackboardTags))
+		{
+			if (!bActive)
+			{
+				Combine->Reaction(Context, Payload, BlackboardTags, NativeBlackboardTags);
+				Combine->SetActive(true);
+			}
+			continue;
+		}
+
+		// 条件不成立且已激活 → 回滚剥离
+		if (bActive)
+		{
+			Combine->ReactionRevert(Context, Payload, BlackboardTags, NativeBlackboardTags);
+			Combine->SetActive(false);
+		}
+	}
+}
+
+void USingularisCombineComponent::TriggerEvaluate(const FSingularisCombineTransientPayload& Payload)
+{
+	PendingPayload = Payload;
+	EvaluatePipeline();
+	PendingPayload = FSingularisCombineTransientPayload{};
+}
+
 UActorComponent* USingularisCombineComponent::GetDeclaredComponent(
 	const ESingularisCombineDependencyScope Scope,
 	const TSubclassOf<UActorComponent> ComponentClass
 ) const
 {
+	// 1) 卫语句：组件类型缺失
 	if (!ComponentClass)
 	{
 		UE_LOG(LogSingularisCombine, Warning, TEXT("GetDeclaredComponent：ComponentClass 为空"));
 		return nullptr;
 	}
 
-	// 1) 从缓存中查找作用域 → 组件类型映射
-	if (const TMap<TSubclassOf<UActorComponent>, TWeakObjectPtr<UActorComponent>>* const ScopeCache = CachedDependencies
-		.Find(
-			Scope
-		))
-	{
-		if (const TWeakObjectPtr<UActorComponent>* const Found = ScopeCache->Find(ComponentClass))
-		{
-			if (Found->IsValid())
-				return Found->Get();
-
-			UE_LOG(
-				LogSingularisCombine,
-				Warning,
-				TEXT("[%s] GetDeclaredComponent：缓存命中但弱引用失效（Scope=%d, Class=%s）"),
-				*GetNameSafe(GetOwner()),
-				static_cast<int32>(Scope),
-				*GetNameSafe(ComponentClass)
-			);
-		}
-		else
-		{
-			UE_LOG(
-				LogSingularisCombine,
-				Warning,
-				TEXT("[%s] GetDeclaredComponent：作用域缓存中未找到声明类型（Scope=%d, Class=%s）"),
-				*GetNameSafe(GetOwner()),
-				static_cast<int32>(Scope),
-				*GetNameSafe(ComponentClass)
-			);
-		}
-	}
-	else
+	// 2) 卫语句：作用域缓存槽位缺失
+	const TMap<TSubclassOf<UActorComponent>, TWeakObjectPtr<UActorComponent>>* const ScopeCache =
+		CachedDependencies.Find(Scope);
+	if (!ScopeCache)
 	{
 		UE_LOG(
 			LogSingularisCombine,
@@ -164,14 +220,44 @@ UActorComponent* USingularisCombineComponent::GetDeclaredComponent(
 			static_cast<int32>(Scope),
 			*GetNameSafe(ComponentClass)
 		);
+		return nullptr;
 	}
 
-	return nullptr;
+	// 3) 卫语句：声明类型未命中
+	const TWeakObjectPtr<UActorComponent>* const Found = ScopeCache->Find(ComponentClass);
+	if (!Found)
+	{
+		UE_LOG(
+			LogSingularisCombine,
+			Warning,
+			TEXT("[%s] GetDeclaredComponent：作用域缓存中未找到声明类型（Scope=%d, Class=%s）"),
+			*GetNameSafe(GetOwner()),
+			static_cast<int32>(Scope),
+			*GetNameSafe(ComponentClass)
+		);
+		return nullptr;
+	}
+
+	// 4) 卫语句：命中但弱引用失效
+	if (!Found->IsValid())
+	{
+		UE_LOG(
+			LogSingularisCombine,
+			Warning,
+			TEXT("[%s] GetDeclaredComponent：缓存命中但弱引用失效（Scope=%d, Class=%s）"),
+			*GetNameSafe(GetOwner()),
+			static_cast<int32>(Scope),
+			*GetNameSafe(ComponentClass)
+		);
+		return nullptr;
+	}
+
+	return Found->Get();
 }
 
 USingularisCombineComponent* USingularisCombineComponent::GetFromStrategy(const USingularisCombine* Strategy)
 {
-	// 1) CDO 与空值保护：CDO 的 Outer 为其 UClass，非组件实例
+	// 1) 卫语句：CDO 的 Outer 为其 UClass，非组件实例
 	if (!Strategy || Strategy->HasAnyFlags(RF_ClassDefaultObject))
 	{
 		UE_LOG(
@@ -198,135 +284,20 @@ USingularisCombineComponent* USingularisCombineComponent::GetFromStrategy(const 
 	return OwnerComponent;
 }
 
-void USingularisCombineComponent::SetPipeline(const FSingularisCombinePipeline& InPipeline)
-{
-	// 1) 回滚当前管线中所有已激活策略的状态
-	if (AActor* const OwnerActor = GetOwner())
-	{
-		FSingularisCombineContext Context;
-		Context.Avatar = OwnerActor;
-		Context.Instigator = Cast<AActor>(OwnerActor->GetInstigator());
-		Context.Target = nullptr;
-		Context.CombineComponent = this;
-
-		for (const FSingularisCombineEntry& Entry : CombinePipeline.Combines)
-		{
-			if (USingularisCombine* Combine = Entry.Combine; Combine && Combine->IsActive())
-			{
-				Combine->ReactionRevert(
-					Context,
-					FSingularisCombineTransientPayload{},
-					BlackboardTags,
-					NativeBlackboardTags
-				);
-				Combine->SetActive(false);
-			}
-		}
-	}
-
-	// 2) 替换管线并立即重估
-	CombinePipeline = InPipeline;
-	EvaluatePipeline();
-}
-
-void USingularisCombineComponent::ClearPipeline()
-{
-	SetPipeline(FSingularisCombinePipeline{});
-}
-
-void USingularisCombineComponent::AddCombineEntry(const FSingularisCombineEntry& Entry)
-{
-	CombinePipeline.Combines.Add(Entry);
-	EvaluatePipeline();
-}
-
-void USingularisCombineComponent::EvaluatePipeline()
+FSingularisCombineContext USingularisCombineComponent::MakeContext()
 {
 	AActor* const OwnerActor = GetOwner();
-	if (!OwnerActor)
-		return;
-
-	// 1) 所有端：刷新全局黑板（GameplayTags + 原生 FName 标签）；仅在标签集合实际变更时广播
-	CollectAllTags();
-
-	const bool bGameplayTagsChanged = BlackboardTags != PreviousBlackboardTags;
-	const bool bNativeTagsChanged = NativeBlackboardTags != PreviousNativeBlackboardTags;
-
-	if (bGameplayTagsChanged || bNativeTagsChanged)
-	{
-		PreviousBlackboardTags = BlackboardTags;
-		PreviousNativeBlackboardTags = NativeBlackboardTags;
-		OnCombineBlackboardUpdatedEvent.Broadcast(BlackboardTags, NativeBlackboardTags);
-	}
-
-	// 2) 服务端权威：构建化合上下文并逐个评估策略管线
-	if (!OwnerActor->HasAuthority())
-		return;
 
 	FSingularisCombineContext Context;
-	Context.Instigator = Cast<AActor>(OwnerActor->GetInstigator());
+	Context.Instigator = OwnerActor ? Cast<AActor>(OwnerActor->GetInstigator()) : nullptr;
 	Context.Avatar = OwnerActor;
 	Context.Target = OwnerActor;
 	Context.CombineComponent = this;
-
-	// 3) 读取待处理事件载荷（TriggerEvaluate 写入，周期轮询时为空）
-	const FSingularisCombineTransientPayload Payload = PendingPayload;
-
-	for (FSingularisCombineEntry& Entry : CombinePipeline.Combines)
-	{
-		USingularisCombine* const Combine = Entry.Combine;
-		if (!Combine)
-			continue;
-
-		// 前置预检：声明依赖未全部满足 → 不进入 CanReaction，直接回滚
-		if (!AreDependenciesSatisfied(Combine, Context))
-		{
-			if (Combine->IsActive())
-			{
-				Combine->ReactionRevert(Context, Payload, BlackboardTags, NativeBlackboardTags);
-				Combine->SetActive(false);
-			}
-			continue;
-		}
-
-		// 依赖已就绪：CanReaction 可假定声明依赖存在
-		if (Combine->CanReaction(Context, Payload, BlackboardTags, NativeBlackboardTags))
-		{
-			if (!Combine->IsActive())
-			{
-				Combine->Reaction(Context, Payload, BlackboardTags, NativeBlackboardTags);
-				Combine->SetActive(true);
-			}
-		}
-		else
-		{
-			if (Combine->IsActive())
-			{
-				Combine->ReactionRevert(Context, Payload, BlackboardTags, NativeBlackboardTags);
-				Combine->SetActive(false);
-			}
-		}
-	}
+	return Context;
 }
 
-void USingularisCombineComponent::TriggerEvaluate(const FSingularisCombineTransientPayload& Payload)
+void USingularisCombineComponent::ResolveDependencies(const FSingularisCombineContext& Context)
 {
-	PendingPayload = Payload;
-	EvaluatePipeline();
-	PendingPayload = FSingularisCombineTransientPayload{};
-}
-
-void USingularisCombineComponent::ResolveDependencies()
-{
-	AActor* OwnerActor = GetOwner();
-	if (!OwnerActor) return;
-
-	FSingularisCombineContext Context;
-	Context.Instigator = Cast<AActor>(OwnerActor->GetInstigator());
-	Context.Avatar = OwnerActor;
-	Context.Target = OwnerActor;
-	Context.CombineComponent = this;
-
 	UE_LOG(
 		LogSingularisCombine,
 		Display,
@@ -342,8 +313,7 @@ void USingularisCombineComponent::ResolveDependencies()
 	for (const FSingularisCombineEntry& Entry : CombinePipeline.Combines)
 	{
 		const USingularisCombine* const Combine = Entry.Combine;
-		if (!Combine)
-			continue;
+		if (!Combine) continue;
 
 		const TMap<ESingularisCombineDependencyScope, FSingularisCombineDependencyList> Declared =
 			GetDeclaredComponentClasses(Combine->GetClass());
@@ -382,7 +352,7 @@ void USingularisCombineComponent::ResolveDependencies()
 	// 2) 将每个作用域映射到 Context 中的 Actor，查找并缓存到对应作用域槽位
 	for (const auto& Pair : AggregatedDeps)
 	{
-		const AActor* ScopeActor = GetContextActor(Context, Pair.Key);
+		AActor* const ScopeActor = GetContextActor(Context, Pair.Key);
 		if (!ScopeActor || Pair.Value.IsEmpty())
 		{
 			UE_LOG(
@@ -396,9 +366,8 @@ void USingularisCombineComponent::ResolveDependencies()
 			continue;
 		}
 
-		TMap<TSubclassOf<UActorComponent>, TWeakObjectPtr<UActorComponent>>& ScopeCache = CachedDependencies.FindOrAdd(
-			Pair.Key
-		);
+		TMap<TSubclassOf<UActorComponent>, TWeakObjectPtr<UActorComponent>>& ScopeCache =
+			CachedDependencies.FindOrAdd(Pair.Key);
 		for (const TSubclassOf<UActorComponent>& DepClass : Pair.Value)
 		{
 			if (UActorComponent* const Found = ScopeActor->GetComponentByClass(DepClass))
@@ -421,21 +390,21 @@ TMap<ESingularisCombineDependencyScope, FSingularisCombineDependencyList>
 USingularisCombineComponent::GetDeclaredComponentClasses(const UClass* StrategyClass)
 {
 	TMap<ESingularisCombineDependencyScope, FSingularisCombineDependencyList> Result;
-
 	if (!StrategyClass)
 		return Result;
 
 	// 1) 沿继承链聚合所有祖先的注册表声明（含自身）：子策略继承父策略的全部声明
 	for (const UClass* Class = StrategyClass; Class; Class = Class->GetSuperClass())
 	{
-		if (const TMap<ESingularisCombineDependencyScope, FSingularisCombineDependencyList>* const Found =
-			FSingularisCombineDependencyRegistry::Get().FindDeclaredClasses(Class))
+		const TMap<ESingularisCombineDependencyScope, FSingularisCombineDependencyList>* const Found =
+			FSingularisCombineDependencyRegistry::Get().FindDeclaredClasses(Class);
+		if (!Found)
+			continue;
+
+		for (const auto& Pair : *Found)
 		{
-			for (const auto& Pair : *Found)
-			{
-				for (const TSubclassOf<UActorComponent>& DepClass : Pair.Value.Classes)
-					Result.FindOrAdd(Pair.Key).Classes.AddUnique(DepClass);
-			}
+			for (const TSubclassOf<UActorComponent>& DepClass : Pair.Value.Classes)
+				Result.FindOrAdd(Pair.Key).Classes.AddUnique(DepClass);
 		}
 	}
 
@@ -468,12 +437,12 @@ bool USingularisCombineComponent::AreDependenciesSatisfied(
 		if (!GetContextActor(Context, Pair.Key))
 			return false;
 
-		// 4) 作用域缓存槽位或任一声明类型缺失 → 不满足
 		const TMap<TSubclassOf<UActorComponent>, TWeakObjectPtr<UActorComponent>>* const ScopeCache =
 			CachedDependencies.Find(Pair.Key);
 		if (!ScopeCache)
 			return false;
 
+		// 4) 任一声明类型缺失或弱引用失效 → 不满足
 		for (const TSubclassOf<UActorComponent>& DepClass : DeclaredTypes)
 		{
 			if (!DepClass)
@@ -497,8 +466,6 @@ void USingularisCombineComponent::CollectAllTags()
 	if (!OwnerActor)
 		return;
 
-	// --- GameplayTags 收集 ---
-
 	// 1) 收集 Actor 自身的 GameplayTags
 	if (const IGameplayTagAssetInterface* const ActorTagInterface = Cast<IGameplayTagAssetInterface>(OwnerActor))
 	{
@@ -521,8 +488,6 @@ void USingularisCombineComponent::CollectAllTags()
 		}
 	}
 
-	// --- 原生 FName 标签收集 ---
-
 	// 3) 收集 Actor 自身的原生 FName 标签
 	NativeBlackboardTags.Append(OwnerActor->Tags);
 
@@ -533,59 +498,32 @@ void USingularisCombineComponent::CollectAllTags()
 
 void USingularisCombineComponent::RegisterCombineSubObjects()
 {
-	// 1) 仅服务器端执行子对象注册
-	if (!GetOwner() || !GetOwner()->HasAuthority())
+	// 1) 卫语句：仅服务器端执行子对象注册
+	AActor* const OwnerActor = GetOwner();
+	if (!OwnerActor || !OwnerActor->HasAuthority())
 		return;
 
 	// 2) 遍历化合管线，将有效的 Instanced 化合子对象添加至网络复制列表
 	for (const FSingularisCombineEntry& Entry : CombinePipeline.Combines)
 	{
-		if (!IsValid(Entry.Combine))
-			continue;
-
-		AddReplicatedSubObject(Entry.Combine);
+		if (IsValid(Entry.Combine))
+			AddReplicatedSubObject(Entry.Combine);
 	}
 }
 
 void USingularisCombineComponent::UnregisterCombineSubObjects()
 {
-	// 1) 仅服务器端执行子对象注销
-	if (!GetOwner() || !GetOwner()->HasAuthority())
+	// 1) 卫语句：仅服务器端执行子对象注销
+	AActor* const OwnerActor = GetOwner();
+	if (!OwnerActor || !OwnerActor->HasAuthority())
 		return;
 
 	// 2) 遍历化合管线，将已注册的化合子对象从网络复制列表中移除
 	for (const FSingularisCombineEntry& Entry : CombinePipeline.Combines)
 	{
-		if (!IsValid(Entry.Combine))
-			continue;
-
-		RemoveReplicatedSubObject(Entry.Combine);
+		if (IsValid(Entry.Combine))
+			RemoveReplicatedSubObject(Entry.Combine);
 	}
-}
-
-// ReSharper disable once CppParameterMayBeConstPtrOrRef
-void USingularisCombineComponent::OnOwnerChildComponentConstructed(UObject* Object)
-{
-	// 过滤：仅关注以本组件 OwnerActor 为 Outer 的 UActorComponent 构造事件
-	if (!IsValid(Object) || !Object->IsA<UActorComponent>())
-		return;
-
-	const AActor* const OwnerActor = GetOwner();
-	if (!OwnerActor || Object->GetOuter() != OwnerActor)
-		return;
-
-	// 合并同帧内的多次构造为单次评估，避免管线被重复触发
-	const UWorld* const World = GetWorld();
-	if (!World)
-		return;
-
-	World->GetTimerManager().ClearTimer(PendingEvaluateHandle);
-	World->GetTimerManager().SetTimer(
-		PendingEvaluateHandle,
-		FTimerDelegate::CreateUObject(this, &USingularisCombineComponent::EvaluatePipeline),
-		0.0f,
-		false
-	);
 }
 
 AActor* USingularisCombineComponent::GetContextActor(

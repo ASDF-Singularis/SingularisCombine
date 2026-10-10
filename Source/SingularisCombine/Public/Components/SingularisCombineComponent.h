@@ -13,11 +13,10 @@
 
 struct FSingularisCombineContext;
 class USingularisCombine;
-class UActorComponent;
 
 #pragma region 委托签名
 
-/** 黑板更新的动态多播委托：同时携带 GameplayTags 与 Actor/Component 原生 FName 标签 */
+/** 黑板更新时广播，同时携带 GameplayTags 与 Actor/Component 原生 FName 标签 */
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(
 	FOnCombineBlackboardUpdatedSignature,
 	const FGameplayTagContainer&,
@@ -29,7 +28,8 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(
 #pragma endregion
 
 /**
- * 引力奇点化合组件
+ * 引力奇点化合组件。
+ *
  * 挂载于 Actor 上，负责收集同 Actor 下所有组件的 GameplayTags 及原生 FName 标签并维护全局黑板，
  * 驱动化合管线逐策略评估：满足条件时触发 Reaction，不满足时触发 ReactionRevert，所有策略独立判定互不中断。
  *
@@ -50,14 +50,14 @@ public:
 #pragma region Parameter
 
 	/**
-	 * 自动评估轮询间隔（秒）
-	 * 组件添加由构造委托即时捕获；组件移除及标签变更通过周期轮询兜底。
-	 * 设为 0.0 则每帧执行评估（不启用定时器）。
+	 * 自动评估轮询间隔（秒）。
+	 *
+	 * 大于 0.0 时按间隔轮询，兜底检测组件增删与标签变更；设为 0.0 则每帧评估（不启用定时器）。
 	 */
 	UPROPERTY(
 		EditDefaultsOnly,
 		BlueprintReadOnly,
-		Category = "SingularisCombine|引力奇点化合组件|参数",
+		Category = "引力奇点化合组件",
 		meta = (DisplayName = "自动评估间隔", ClampMin = "0.0", UIMin = "0.0")
 	)
 	float AutoEvaluateInterval = 0.1f;
@@ -66,30 +66,27 @@ public:
 	UPROPERTY(
 		EditDefaultsOnly,
 		BlueprintReadOnly,
-		Category = "SingularisCombine|引力奇点化合组件|参数",
+		Category = "引力奇点化合组件",
 		meta = (DisplayName = "化合管线")
 	)
 	FSingularisCombinePipeline CombinePipeline{};
 
 #pragma endregion
 
-#pragma region 事件分发器
+#pragma region Event Dispatcher
 
-	/**
-	 * 当组件重新收集全局 Tags 并更新黑板后触发
-	 * 输出引脚 BlackboardTags 携带 GameplayTags 集合，NativeTags 携带 FName 原生标签集合。
-	 */
+	/** 组件重新收集全局标签并更新黑板后广播 */
 	UPROPERTY(
 		BlueprintAssignable,
-		Category = "SingularisCombine|引力奇点化合组件|事件分发器",
-		meta = (DisplayName = "OnCombineBlackboardUpdatedEvent")
+		Category = "引力奇点化合组件|事件分发器",
+		meta = (DisplayName = "黑板更新时")
 	)
 	FOnCombineBlackboardUpdatedSignature OnCombineBlackboardUpdatedEvent{};
 
 #pragma endregion
 
 private:
-#pragma region Internal Variable
+#pragma region State
 
 	/** 全局黑板：缓存当前 Actor 上收集到的所有 GameplayTags */
 	FGameplayTagContainer BlackboardTags{};
@@ -103,22 +100,16 @@ private:
 	/** 前次 FName 标签快照，用于广播幂等性比较 */
 	TArray<FName> PreviousNativeBlackboardTags{};
 
-	/** UObject 构造委托句柄：检测 OwnerActor 上新组件的添加 */
-	FDelegateHandle ObjectConstructedHandle{};
-
 	/** 周期性评估定时器句柄 */
 	FTimerHandle PeriodicEvaluateHandle{};
 
-	/** 即时评估合并定时器句柄：将同帧内多次构造合并为一次评估 */
-	FTimerHandle PendingEvaluateHandle{};
-
-	/** TriggerEvaluate 写入的待处理事件载荷，EvaluatePipeline 读取后由 TriggerEvaluate 清空 */
+	/** TriggerEvaluate 写入的待处理事件载荷，本次评估读取后清空 */
 	UPROPERTY(Transient)
 	FSingularisCombineTransientPayload PendingPayload{};
 
 	/**
-	 * 依赖组件缓存：按作用域分组，每个作用域内按组件类型缓存
-	 * 由 ResolveDependencies(Context) 每次评估前刷新
+	 * 依赖组件缓存：按作用域分组，每个作用域内按组件类型缓存。
+	 * 由 ResolveDependencies 在 BeginPlay 一次性解析，供整个生命周期查询。
 	 */
 	TMap<ESingularisCombineDependencyScope, TMap<TSubclassOf<UActorComponent>, TWeakObjectPtr<UActorComponent>>>
 	CachedDependencies{};
@@ -136,7 +127,6 @@ public:
 
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
-	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 	virtual void TickComponent(
 		float DeltaTime,
 		ELevelTick TickType,
@@ -145,72 +135,19 @@ public:
 
 #pragma endregion
 
-#pragma region State
-
-	/** 获取当前全局黑板上的 GameplayTags 快照 */
-	UFUNCTION(
-		BlueprintPure,
-		BlueprintCallable,
-		Category = "SingularisCombine|引力奇点化合组件|State",
-		meta = (DisplayName = "GetBlackboardTags")
-	)
-	FGameplayTagContainer GetBlackboardTags() const { return BlackboardTags; }
-
-	/** 获取当前全局黑板上收集的原生 FName 标签快照 */
-	UFUNCTION(
-		BlueprintPure,
-		BlueprintCallable,
-		Category = "SingularisCombine|引力奇点化合组件|State",
-		meta = (DisplayName = "GetNativeBlackboardTags")
-	)
-	const TArray<FName>& GetNativeBlackboardTags() const { return NativeBlackboardTags; }
-
-	/**
-	 * 查询预缓存的声明式组件
-	 * BlueprintPure + DeterminesOutputType：声明节点的输出引脚类型随 ComponentClass 自动推导。
-	 * 必须在 ResolveDependencies(Context) 之后调用。
-	 * @param Scope           依赖作用域（Instigator / Avatar / Target）
-	 * @param ComponentClass  组件类型
-	 * @return 预缓存的组件引用，未找到时返回 nullptr
-	 */
-	UFUNCTION(
-		BlueprintPure,
-		Category = "SingularisCombine|引力奇点化合组件|State",
-		meta = (DisplayName = "获取声明组件", DeterminesOutputType = "ComponentClass")
-	)
-	UActorComponent* GetDeclaredComponent(
-		ESingularisCombineDependencyScope Scope,
-		TSubclassOf<UActorComponent> ComponentClass
-	) const;
-
-#pragma endregion
-
 #pragma region API
 
 	/**
-	 * 静态工厂：从策略实例反查所属的化合组件
-	 * 策略实例作为 UObject 子对象挂载于组件，通过 Outer 链定位。
-	 * 供声明节点 K2Node 展开期生成 GetFromStrategy → GetDeclaredComponent 两步调用链使用，
-	 * 避免策略类持有对组件的反向引用（依赖倒置）。
-	 * @param Strategy  策略实例（不可为空，CDO 返回 nullptr）
-	 * @return 挂载该策略的化合组件；Outer 非组件或 CDO 时返回 nullptr
-	 */
-	UFUNCTION(
-		BlueprintPure,
-		Category = "SingularisCombine|引力奇点化合组件|API",
-		meta = (DisplayName = "GetFromStrategy")
-	)
-	static USingularisCombineComponent* GetFromStrategy(const USingularisCombine* Strategy);
-
-	/**
-	 * 设置化合管线
+	 * 设置化合管线。
+	 *
 	 * 回滚当前所有已激活策略的状态，替换为新管线并立即触发重估。
+	 * @param InPipeline 新的化合管线。
 	 */
 	UFUNCTION(
 		BlueprintCallable,
 		BlueprintAuthorityOnly,
-		Category = "SingularisCombine|引力奇点化合组件|API",
-		meta = (DisplayName = "SetPipeline")
+		Category = "引力奇点化合组件|API",
+		meta = (DisplayName = "设置管线")
 	)
 	void SetPipeline(const FSingularisCombinePipeline& InPipeline);
 
@@ -218,8 +155,8 @@ public:
 	UFUNCTION(
 		BlueprintCallable,
 		BlueprintAuthorityOnly,
-		Category = "SingularisCombine|引力奇点化合组件|API",
-		meta = (DisplayName = "ClearPipeline")
+		Category = "引力奇点化合组件|API",
+		meta = (DisplayName = "清空管线")
 	)
 	void ClearPipeline();
 
@@ -227,64 +164,122 @@ public:
 	UFUNCTION(
 		BlueprintCallable,
 		BlueprintAuthorityOnly,
-		Category = "SingularisCombine|引力奇点化合组件|API",
-		meta = (DisplayName = "AddCombineEntry")
+		Category = "引力奇点化合组件|API",
+		meta = (DisplayName = "追加化合条目")
 	)
 	void AddCombineEntry(const FSingularisCombineEntry& Entry);
 
-	/**
-	 * 触发化合管线的核心重估循环 (Evaluate)
-	 * 重新收集 GameplayTags 与原生 FName 标签，并逐一核对化合策略。
-	 */
+	/** 触发核心重估循环：重新收集全局标签并逐一核对化合策略。 */
 	UFUNCTION(
 		BlueprintCallable,
-		Category = "SingularisCombine|引力奇点化合组件|API",
-		meta = (DisplayName = "EvaluatePipeline")
+		Category = "引力奇点化合组件|API",
+		meta = (DisplayName = "评估管线")
 	)
 	void EvaluatePipeline();
 
 	/**
-	 * 事件驱动评估
-	 * 立即触发一次 EvaluatePipeline，将 Payload 贯穿本次评估所有策略
-	 * @param Payload  事件载荷（事件标识 + 结构化数据），周期轮询触发时为空
+	 * 事件驱动评估。
+	 *
+	 * 立即触发一次 EvaluatePipeline，将 Payload 贯穿本次评估所有策略。
+	 * @param Payload 事件载荷（事件标识 + 结构化数据），周期轮询触发时为空。
 	 */
 	UFUNCTION(
 		BlueprintCallable,
 		BlueprintAuthorityOnly,
-		Category = "SingularisCombine|引力奇点化合组件|API",
-		meta = (DisplayName = "TriggerEvaluate")
+		Category = "引力奇点化合组件|API",
+		meta = (DisplayName = "触发评估")
 	)
 	void TriggerEvaluate(const FSingularisCombineTransientPayload& Payload);
+
+#pragma endregion
+
+#pragma region SPI
+
+	/** 获取当前全局黑板上的 GameplayTags 快照 */
+	UFUNCTION(
+		BlueprintPure,
+		Category = "引力奇点化合组件|SPI",
+		meta = (DisplayName = "获取黑板标签")
+	)
+	FGameplayTagContainer GetBlackboardTags() const { return BlackboardTags; }
+
+	/** 获取当前全局黑板上收集的原生 FName 标签快照 */
+	UFUNCTION(
+		BlueprintPure,
+		Category = "引力奇点化合组件|SPI",
+		meta = (DisplayName = "获取黑板原生标签")
+	)
+	const TArray<FName>& GetNativeBlackboardTags() const { return NativeBlackboardTags; }
+
+	/**
+	 * 查询预缓存的声明式组件。
+	 *
+	 * BlueprintPure + DeterminesOutputType：声明节点的输出引脚类型随 ComponentClass 自动推导。
+	 * 必须在 ResolveDependencies 之后调用。
+	 * @param Scope 依赖作用域（Instigator / Avatar / Target）。
+	 * @param ComponentClass 组件类型。
+	 * @return 预缓存的组件引用，未找到时返回 nullptr。
+	 */
+	UFUNCTION(
+		BlueprintPure,
+		Category = "引力奇点化合组件|SPI",
+		meta = (DisplayName = "获取声明组件", DeterminesOutputType = "ComponentClass")
+	)
+	UActorComponent* GetDeclaredComponent(
+		ESingularisCombineDependencyScope Scope,
+		TSubclassOf<UActorComponent> ComponentClass
+	) const;
+
+	/**
+	 * 静态工厂：从策略实例反查所属的化合组件。
+	 *
+	 * 策略实例作为 UObject 子对象挂载于组件，通过 Outer 链定位。
+	 * 供声明节点展开期生成 GetFromStrategy → GetDeclaredComponent 两步调用链，避免策略类反向引用组件。
+	 * @param Strategy 策略实例（不可为空，CDO 返回 nullptr）。
+	 * @return 挂载该策略的化合组件；Outer 非组件或 CDO 时返回 nullptr。
+	 */
+	UFUNCTION(
+		BlueprintPure,
+		Category = "引力奇点化合组件|SPI",
+		meta = (DisplayName = "获取所属化合组件")
+	)
+	static USingularisCombineComponent* GetFromStrategy(const USingularisCombine* Strategy);
 
 #pragma endregion
 
 private:
 #pragma region Internal Function
 
-	/**
-	* 预解析管线中所有策略声明式配置的组件
-	* 收集所有策略声明的依赖并集，将每个作用域映射到 Context 中的 Actor，
-	 * 按声明类型查找并缓存到对应作用域槽位。
-	 * 必须在策略评估前调用；策略通过 GetDeclaredComponent 读取缓存。
-	*/
-	void ResolveDependencies();
+	/** 构建化合上下文：Avatar 与 Target 均为 Owner，Instigator 取 Owner 的发起者。 */
+	FSingularisCombineContext MakeContext();
 
 	/**
-	 * 查询指定策略类声明式配置的组件类型集合
+	 * 预解析管线中所有策略声明式配置的组件。
+	 *
+	 * 收集所有策略声明的依赖并集，将每个作用域映射到 Context 中的 Actor，
+	 * 按声明类型查找并缓存到对应作用域槽位。
+	 * @param Context 化合上下文，用于将作用域映射到对应 Actor。
+	 */
+	void ResolveDependencies(const FSingularisCombineContext& Context);
+
+	/**
+	 * 查询指定策略类声明式配置的组件类型集合。
+	 *
 	 * 沿继承链聚合所有祖先注册表声明（含自身），合并子策略继承父策略的全部声明。
 	 * 注册表为唯一真相源，原生路径与蓝图路径统一经由编译 hook 写入。
-	 * @param StrategyClass  策略类
-	 * @return 按作用域分组的声明组件类型列表
+	 * @param StrategyClass 策略类。
+	 * @return 按作用域分组的声明组件类型列表。
 	 */
 	static TMap<ESingularisCombineDependencyScope, FSingularisCombineDependencyList>
 	GetDeclaredComponentClasses(const UClass* StrategyClass);
 
 	/**
-	* 检查策略声明的依赖是否全部满足
-	* 空声明返回 true（无条件满足）；任一声明缺失返回 false
-	* @param Strategy  目标策略
-	 * @param Context   化合上下文，用于将作用域映射到 Actor
-	 * @return 声明依赖是否全部命中缓存
+	 * 检查策略声明的依赖是否全部满足。
+	 *
+	 * 空声明返回 true（无条件满足）；任一声明缺失返回 false。
+	 * @param Strategy 目标策略。
+	 * @param Context 化合上下文，用于将作用域映射到对应 Actor。
+	 * @return 声明依赖是否全部命中缓存。
 	 */
 	bool AreDependenciesSatisfied(const USingularisCombine* Strategy, const FSingularisCombineContext& Context) const;
 
@@ -296,12 +291,6 @@ private:
 
 	/** 将化合管线中全部已注册的 Instanced 化合子对象从网络复制列表中移除。仅在服务器端执行。 */
 	void UnregisterCombineSubObjects();
-
-	/**
-	 * UObject 构造全局回调
-	 * 当任意 UActorComponent 被构造且其 Outer 为本组件 OwnerActor 时，合并触发管线评估。
-	 */
-	void OnOwnerChildComponentConstructed(UObject* Object);
 
 	/** 将依赖作用域映射为 Context 中对应的 Actor */
 	static AActor* GetContextActor(const FSingularisCombineContext& Context, ESingularisCombineDependencyScope Scope);
